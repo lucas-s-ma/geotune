@@ -20,7 +20,7 @@ opt_interval: 64 # 8 * 8 * 64 = 4096
 eval_steps: 15
 precision: bf16
 
-prefix_path: ../dataprep
+prefix_path: co-amp/dataprep
 # prefix_path has three folders: 1. important_data to save key_name related; 2. af2_embedding; 3. gearnet_embedding
 
 save_steps: 15
