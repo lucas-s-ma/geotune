@@ -14,7 +14,7 @@ valid_data_type: valid_valid
 sample_mode: loss_large
 ratio: 1.0
 
-n_epochs: 200
+n_epochs: 20
 batch_size: 8
 opt_interval: 64 # 8 * 8 * 64 = 4096
 eval_steps: 15
