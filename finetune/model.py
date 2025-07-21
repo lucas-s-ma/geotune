@@ -44,6 +44,9 @@ class ContrastiveLearningModel(nn.Module):
         Returns: cl_loss
 
         """
+
+        struc_embeddings = struc_embeddings.to(torch.float32)
+
         projected_seq = self.linear_seq(seq_embeddings)
         projected_struct = self.linear_struct(struc_embeddings)
 

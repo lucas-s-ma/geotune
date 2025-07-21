@@ -36,14 +36,15 @@ np.save(os.path.join(OUTDIR, "key_names_valid_train.npy"),
 np.save(os.path.join(OUTDIR, "key_names_valid_valid.npy"),
         all_keys[:1], allow_pickle=True)  # 1‐example valid split
 
-# 4) build and save string‐token map
-#    (HF will accept List[str] per example)
+# 4) build and save raw‐sequence map
+#    so that collate_fn can call tokenizer on List[str]
 key_name2seq_token = {
-    key: tokenizer.tokenize(seq, add_special_tokens=False)
+    key: seq
     for key, seq in zip(keys, sequences)
 }
 np.save(os.path.join(OUTDIR, "key_name2seq_token.npy"),
         key_name2seq_token, allow_pickle=True)
+
 
 # 5) dummy structural “foldseek” tokens (still numeric maps)
 dummy_foldseek = {

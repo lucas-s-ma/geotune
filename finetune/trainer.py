@@ -226,7 +226,7 @@ def train(config: DictConfig):
     )
 
     # Loss, optimizer, scheduler
-    loss_fn = torch.nn.CrossEntropyLoss(ignore_index=-100)
+    loss_fn = torch.nn.CrossEntropyLoss(ignore_index=-100, reduction="none")
     param_groups = [
         {'params': model.trunk.parameters(), 'lr': 1e-4},
         {'params': model.classifier.parameters(), 'lr': 1e-3},
