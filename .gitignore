@@ -3,4 +3,5 @@ outputs/
 __pycache__/
 wandb/
 .vscode/
-
+dataprep/gearnet_embedding
+dataprep/important_data
