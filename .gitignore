@@ -2,3 +2,5 @@ checkpoint/
 outputs/
 __pycache__/
 wandb/
+.vscode/
+
