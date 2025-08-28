@@ -2,6 +2,7 @@ import functools
 import logging
 import os
 import time
+import wandb
 
 import numpy as np
 import torch
@@ -114,6 +115,11 @@ def train(config: DictConfig):
     # Training loop
     global_step = 0
     logger.info("Starting training for smoke test...")
+
+    run = wandb.init(
+        project="original amplify loss"
+    )
+
     for epoch in range(config.n_epochs):
         model.train()
         epoch_losses = []
@@ -162,6 +168,8 @@ def train(config: DictConfig):
             optimizer.zero_grad()
             scheduler.step()
 
+            run.log({"mlm": mlm_loss, "intra_loss": intra_loss, "inter_loss":inter_loss, "total":loss})
+
             epoch_losses.append(loss.item())
 
             if global_step % config.eval_steps == 0:
@@ -178,6 +186,7 @@ def train(config: DictConfig):
 
 
 if __name__ == '__main__':
+
     # Example usage with a dummy config for smoke test
     dummy_config = DictConfig({
         'prt_model_name': 'facebook/esm2_t30_150M_UR50D',

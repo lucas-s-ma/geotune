@@ -23,7 +23,8 @@ import torch.nn as nn
 
 from transformers import AutoTokenizer
 from Bio.PDB.MMCIFParser import MMCIFParser, MMCIF2Dict
-from Bio.PDB.Polypeptide import is_aa, three_to_one
+from Bio.PDB.Polypeptide import is_aa, three_to_one, Polypeptide, PPBuilder
+from Bio.PDB.vectors import calc_dihedral
 import mini3di
 
 # ------------------------- config -------------------------
@@ -213,6 +214,66 @@ def encode_3di_tokens(structure) -> List[int]:
     return tokens
 # ----------------------------------------------------------
 
+# ------------------ Dihedral Angle Extraction -----------------
+def encode_dihedral_angles(structure):
+    """
+    Calculates phi, psi, and omega dihedral angles for each residue.
+    Returns a numpy array of shape (L, 3) with angles in radians.
+    NaN is used for missing angles.
+    """
+    dihedrals = []
+    for model in structure:
+        for chain in model:
+            try:
+                peptides = PPBuilder().build_peptides(chain)
+                for peptide in peptides:
+                    phi_psi = peptide.get_phi_psi_list()
+                    for i, (residue, (phi, psi)) in enumerate(zip(peptide, phi_psi)):
+                        omega = None
+                        if i > 0:
+                            try:
+                                c_prev = peptide[i-1]['C']
+                                n_curr = residue['N']
+                                ca_curr = residue['CA']
+                                c_curr = residue['C']
+                                omega_v = calc_dihedral(c_prev.get_vector(), n_curr.get_vector(), ca_curr.get_vector(), c_curr.get_vector())
+                                omega = omega_v
+                            except (KeyError, IndexError):
+                                pass # omega remains None
+                        
+                        # Replace None with np.nan for consistent array type
+                        phi = phi if phi is not None else np.nan
+                        psi = psi if psi is not None else np.nan
+                        omega = omega if omega is not None else np.nan
+                        dihedrals.append([phi, psi, omega])
+            # In encode_dihedral_angles function
+            except Exception as e:
+                # This will show you why peptide building is failing for a given chain.
+                print(f"    - Warning: Could not calculate dihedrals for chain {chain.id} in {structure.id}. Error: {e}")
+                continue
+
+    return np.array(dihedrals, dtype=np.float32)
+
+def ensure_same_length_dihedral(a: np.ndarray, b_len: int) -> np.ndarray:
+    """
+    Aligns the length of a dihedral angle array (L, 3) to b_len.
+    Pads with [nan, nan, nan] or truncates.
+    """
+    if a.shape[0] == b_len:
+        return a
+    if a.shape[0] > b_len:
+        return a[:b_len, :]
+    
+    # Handle empty input array, which can happen if no dihedrals were computed.
+    if a.size == 0:
+        return np.full((b_len, 3), np.nan, dtype=np.float32)
+
+    # Padding
+    pad_width = b_len - a.shape[0]
+    pad_values = np.full((pad_width, 3), np.nan, dtype=np.float32)
+    return np.vstack([a, pad_values])
+# ----------------------------------------------------------
+
 # ---------------------- utilities -------------------------
 def ensure_same_length(a: List[int], b_len: int) -> List[int]:
     if len(a) == b_len: return a
@@ -245,9 +306,9 @@ def has_protein_residues(cif_path: str, min_len: int = 1) -> bool:
 # ---------------------------- main ------------------------
 def main():
     p = argparse.ArgumentParser(description="LiteGearNet embeddings + 3Di tokens (AMPLIFY layout)")
-    p.add_argument("--cif_dir", type=str, default="cifs")
-    p.add_argument("--out_emb_dir", type=str, default="co-amp/dataprep/gearnet_embedding")
-    p.add_argument("--out_meta_dir", type=str, default="co-amp/dataprep/important_data")
+    p.add_argument("--cif_dir", type=str, default="dataprep/cifs")
+    p.add_argument("--out_emb_dir", type=str, default="dataprep/gearnet_embedding")
+    p.add_argument("--out_meta_dir", type=str, default="dataprep/important_data")
     p.add_argument("--hidden_dim", type=int, default=256)
     p.add_argument("--knn_k", type=int, default=16)
     p.add_argument("--valid_fraction", type=float, default=0.0)
@@ -272,7 +333,7 @@ def main():
     if not screened:
         raise SystemExit("No protein-like CIFs after prescreening. Try lowering --min_len.")
 
-    key2seq_tokens, key2foldseek_tokens, all_keys = {}, {}, []
+    key2seq_tokens, key2foldseek_tokens, key2dihedral, all_keys = {}, {}, {}, []
     kept = skipped = 0
 
     for i, cif_path in enumerate(screened):
@@ -288,15 +349,18 @@ def main():
             )
 
             foldseek_tok = encode_3di_tokens(structure)
+            dihedral_angles = encode_dihedral_angles(structure)
 
             # align lengths
             L = node_repr.shape[0]
             foldseek_tok = ensure_same_length(foldseek_tok, L)
+            dihedral_angles = ensure_same_length_dihedral(dihedral_angles, L)
 
             np.save(os.path.join(args.out_emb_dir, f"{key}.npy"), node_repr)
             key2seq_tokens[key] = seq
             clean_foldseek_tok = [0 if x is None else x for x in foldseek_tok]
             key2foldseek_tokens[key] = np.array(clean_foldseek_tok, dtype=np.int64)
+            key2dihedral[key] = dihedral_angles
             all_keys.append(key)
 
             kept += 1
@@ -312,6 +376,7 @@ def main():
     np.save(os.path.join(args.out_meta_dir, "key_names_valid_valid.npy"), np.array(valid_keys, dtype=object))
     np.save(os.path.join(args.out_meta_dir, "key_name2seq_token.npy"), key2seq_tokens, allow_pickle=True)
     np.save(os.path.join(args.out_meta_dir, "key_name2foldseek_token.npy"), key2foldseek_tokens, allow_pickle=True)
+    np.save(os.path.join(args.out_meta_dir, "key_name2dihedral.npy"), key2dihedral, allow_pickle=True)
 
     print(f"\nSummary: kept={kept}, skipped={skipped}, total_input={len(cif_paths)}")
     print("Done. Wrote embeddings + maps into AMPLIFY-style layout.")

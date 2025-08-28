@@ -57,6 +57,11 @@ class ProteinDataset(Dataset):
             os.path.join(key_prefix_path, struc_token_path), allow_pickle=True
         ).item()
 
+        self.key2dihedral = np.load(
+            os.path.join(key_prefix_path, "key_name2dihedral.npy"),
+            allow_pickle=True,
+        ).item()
+
         self.embed_prefix_path = {
             "af2": os.path.join(prefix_path, "af2_embedding"),
             "gearnet": os.path.join(prefix_path, "gearnet_embedding"),
@@ -71,6 +76,7 @@ class ProteinDataset(Dataset):
         key = self.keys[idx]
         seq_token = self.key2seq_token[key]
         struc_token = self.key2struc_token[key]
+        dihedral = torch.from_numpy(self.key2dihedral[key])
         weight = 1.0  # self.key2weight[key]
 
         embed_path = os.path.join(self.embed_prefix_path, f"{key}.npy")
@@ -93,11 +99,13 @@ class ProteinDataset(Dataset):
                 ]
             )
             struc_embedding = struc_embedding[start_idx : start_idx + self.crop_length]
+            dihedral = dihedral[start_idx : start_idx + self.crop_length]
 
         return {
             "seq_token": seq_token,
             "struc_token": struc_token,
             "struc_embedding": struc_embedding,
+            "dihedral": dihedral,
             "weight": weight,
         }
 
@@ -210,6 +218,9 @@ def collate_fn(
     # collate embeddings
     struc_embeddings = torch.cat([item["struc_embedding"] for item in batch], dim=0)
 
+    # collate dihedrals
+    dihedrals = torch.cat([item["dihedral"] for item in batch], dim=0)
+
     # collate weights
     weights = torch.tensor([item["weight"] for item in batch], dtype=torch.float)
 
@@ -228,6 +239,7 @@ def collate_fn(
         "seq_labels": seq_labels,
         "struc_labels": struc_labels,
         "struc_embeddings": struc_embeddings,
+        "dihedrals": dihedrals,
         "weights": weights,
         "cl_weights": cl_weights,
     }

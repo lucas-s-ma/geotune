@@ -93,6 +93,8 @@ def train(config: DictConfig):
         {'params': model.trunk.parameters(), 'lr': 1e-5}, # Lower LR for fine-tuning
         {'params': model.classifier.parameters(), 'lr': 1e-4},
         {'params': model.cl_model.parameters(), 'lr': 1e-4},
+        {'params': model.dihedral_projector.parameters(), 'lr': 1e-4},
+        {'params': model.seq_projector_for_dihedral.parameters(), 'lr': 1e-4},
     ]
     optimizer = torch.optim.AdamW(param_groups, betas=(0.9, 0.95), weight_decay=0.01)
     updates_per_epoch = len(dataloader_train)
@@ -150,10 +152,18 @@ def train(config: DictConfig):
             inter_loss = (torch.sum(loss_seq_to_struct) + torch.sum(loss_struct_to_seq)) / 2.0
             inter_loss /= (constants.MEAN_SEQ_LEN * config.batch_size * config.ratio)
 
+            # New dihedral constraint loss
+            dihedral_constraint_loss = model.dihedral_constraint_forward(
+                seq_emb,
+                batch["dihedrals"].to(data_type),
+                config.dihedral_epsilon,
+            )
+
             loss = (
                 config.loss_weight[0] * mlm_loss
                 + config.loss_weight[1] * intra_loss
                 + config.loss_weight[2] * inter_loss
+                + config.loss_weight[3] * dihedral_constraint_loss
             )
 
             # Backward and step
@@ -181,7 +191,8 @@ if __name__ == '__main__':
     # Example usage with a dummy config for smoke test
     dummy_config = DictConfig({
         'prt_model_name': 'facebook/esm2_t30_150M_UR50D',
-        'loss_weight': [1.0, 0.5, 0.5],
+        'loss_weight': [1.0, 0.5, 0.5, 0.2], # Added weight for dihedral loss
+        'dihedral_epsilon': 0.1, # Epsilon for the dihedral constraint loss
         'sample_mode': 'loss_large',
         'ratio': 1.0,
         'struc_token_type': 'foldseek',

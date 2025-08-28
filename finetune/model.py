@@ -121,6 +121,11 @@ class AmplifyClassifier(nn.Module):
         self.cl_model = ContrastiveLearningModel(
             seq_dim=seq_D, struc_dim=struc_D, output_dim=output_D
         )
+        # Projectors for dihedral angle constraint loss
+        self.dihedral_projector = nn.Linear(
+            6, output_D
+        )  # 3 angles * (cos, sin) -> 6 features
+        self.seq_projector_for_dihedral = nn.Linear(seq_D, output_D)
 
     def main_forward(
         self,
@@ -176,6 +181,55 @@ class AmplifyClassifier(nn.Module):
             seq_embeddings, struc_embeddings, cl_weights
         )
         return loss_seq_to_struct, loss_struct_to_seq
+
+    def dihedral_constraint_forward(
+        self,
+        seq_embeddings: torch.Tensor,
+        dihedrals: torch.Tensor,
+        epsilon: float,
+    ) -> torch.Tensor:
+        """
+        Computes a physical constraint loss based on dihedral angles,
+        formulated as: loss = mean(max(0, dist - epsilon)).
+
+        Args:
+            seq_embeddings: Sequence embeddings from the trunk model.
+            dihedrals: Tensor of (phi, psi, omega) angles.
+            epsilon: The margin for the constraint loss.
+
+        Returns:
+            A scalar tensor representing the mean constraint loss.
+        """
+        # Filter out residues where any dihedral angle is NaN
+        nan_mask = ~torch.isnan(dihedrals).any(dim=1)
+        valid_dihedrals = dihedrals[nan_mask]
+        valid_seq_embeddings = seq_embeddings[nan_mask]
+
+        if valid_dihedrals.shape[0] == 0:
+            return torch.tensor(0.0, device=seq_embeddings.device)
+
+        # Project sequence embeddings to the common space
+        proj_seq = self.seq_projector_for_dihedral(valid_seq_embeddings)
+
+        # Use sin/cos encoding for periodic dihedral angles
+        dihedrals_cos = torch.cos(valid_dihedrals)
+        dihedrals_sin = torch.sin(valid_dihedrals)
+        dihedral_features = torch.cat([dihedrals_cos, dihedrals_sin], dim=1)
+
+        # Project dihedral features to the common space
+        proj_dihedral = self.dihedral_projector(dihedral_features)
+
+        # Normalize projected vectors before computing distance
+        proj_seq = F.normalize(proj_seq, p=2, dim=-1)
+        proj_dihedral = F.normalize(proj_dihedral, p=2, dim=-1)
+
+        # Squared L2 distance is 2 - 2 * cos_sim for normalized vectors
+        dist_sq = ((proj_seq - proj_dihedral) ** 2).sum(dim=-1)
+
+        # Hinge loss for the constraint: mean(max(0, distance - epsilon))
+        constraint_loss = F.relu(dist_sq - epsilon)
+
+        return constraint_loss.mean()
 
 
 class BaseDownstreamModel(nn.Module):
