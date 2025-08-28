@@ -214,9 +214,6 @@ def encode_3di_tokens(structure) -> List[int]:
 # ----------------------------------------------------------
 
 # ---------------------- utilities -------------------------
-def tokenize_amplify(tokenizer, seq: str) -> List[int]:
-    return tokenizer(seq, add_special_tokens=False)["input_ids"]
-
 def ensure_same_length(a: List[int], b_len: int) -> List[int]:
     if len(a) == b_len: return a
     if len(a) > b_len: return a[:b_len]
@@ -249,9 +246,8 @@ def has_protein_residues(cif_path: str, min_len: int = 1) -> bool:
 def main():
     p = argparse.ArgumentParser(description="LiteGearNet embeddings + 3Di tokens (AMPLIFY layout)")
     p.add_argument("--cif_dir", type=str, default="cifs")
-    p.add_argument("--out_emb_dir", type=str, default="gearnet_embedding")
-    p.add_argument("--out_meta_dir", type=str, default="important_data")
-    p.add_argument("--tokenizer_id", type=str, default=DEFAULT_TOKENIZER_ID)
+    p.add_argument("--out_emb_dir", type=str, default="co-amp/dataprep/gearnet_embedding")
+    p.add_argument("--out_meta_dir", type=str, default="co-amp/dataprep/important_data")
     p.add_argument("--hidden_dim", type=int, default=256)
     p.add_argument("--knn_k", type=int, default=16)
     p.add_argument("--valid_fraction", type=float, default=0.0)
@@ -276,8 +272,6 @@ def main():
     if not screened:
         raise SystemExit("No protein-like CIFs after prescreening. Try lowering --min_len.")
 
-    tokenizer = AutoTokenizer.from_pretrained(args.tokenizer_id, trust_remote_code=True)
-
     key2seq_tokens, key2foldseek_tokens, all_keys = {}, {}, []
     kept = skipped = 0
 
@@ -294,16 +288,15 @@ def main():
             )
 
             foldseek_tok = encode_3di_tokens(structure)
-            seq_tok = tokenize_amplify(tokenizer, seq)
 
             # align lengths
             L = node_repr.shape[0]
             foldseek_tok = ensure_same_length(foldseek_tok, L)
-            seq_tok = ensure_same_length(seq_tok, L)
 
             np.save(os.path.join(args.out_emb_dir, f"{key}.npy"), node_repr)
-            key2seq_tokens[key] = seq_tok
-            key2foldseek_tokens[key] = foldseek_tok
+            key2seq_tokens[key] = seq
+            clean_foldseek_tok = [0 if x is None else x for x in foldseek_tok]
+            key2foldseek_tokens[key] = np.array(clean_foldseek_tok, dtype=np.int64)
             all_keys.append(key)
 
             kept += 1

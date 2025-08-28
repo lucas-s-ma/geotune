@@ -38,7 +38,7 @@ class ProteinDataset(Dataset):
         """
         key_prefix_path = os.path.join(prefix_path, "important_data")
         self.keys = np.load(
-            os.path.join(key_prefix_path, "key_names_" + data_type + ".npy")
+            os.path.join(key_prefix_path, "key_names_" + data_type + ".npy"), allow_pickle=True
         )
         print(key_prefix_path)
 
