@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+
 """
 Lite pipeline: CIF -> (LiteGearNet embeddings, Foldseek 3Di tokens) in AMPLIFY-style layout.
 
