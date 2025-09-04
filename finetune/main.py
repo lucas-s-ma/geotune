@@ -8,6 +8,7 @@ import numpy as np
 import torch
 import wandb
 from omegaconf import DictConfig, OmegaConf
+from hydra.utils import get_original_cwd
 
 from downstreamer import downstream
 from trainer import train
@@ -55,12 +56,6 @@ def prepare_task_config(cfg: DictConfig, task_name: str) -> DictConfig:
 
 @hydra.main(version_base=None, config_path="config/", config_name="config.yaml")
 def pipeline(cfg: DictConfig) -> None:
-    # Convert relative paths to absolute paths
-    original_cwd = hydra.utils.get_original_cwd()
-    cfg.experiments.prt_model_path = os.path.join(original_cwd, cfg.experiments.prt_model_path)
-    cfg.experiments.ft_model_path = os.path.join(original_cwd, cfg.experiments.ft_model_path)
-    cfg.experiments.data_path = os.path.join(original_cwd, cfg.experiments.data_path)
-
     # Initialize W&B with full Hydra config
     # run_name = f"{cfg.experiments.prt_model_name.replace('/', '_')}_seed{cfg.experiments.seed}_{cfg.experiments.mode}"
     """
@@ -79,6 +74,10 @@ def pipeline(cfg: DictConfig) -> None:
     if torch.cuda.is_available():
         torch.cuda.manual_seed_all(cfg.experiments.seed)
 
+    # Make original CWD available to other modules
+    OmegaConf.set_struct(cfg.experiments, False)
+    cfg.experiments.original_cwd = get_original_cwd()
+
     try:
         if cfg.experiments.mode == "train":
             logger.info("Starting training...")
@@ -88,8 +87,13 @@ def pipeline(cfg: DictConfig) -> None:
             logger.info("Starting downstream evaluations...")
             prt_model_safe = cfg.experiments.prt_model_name.split("/")[-1]
             output_dir = os.path.join(
-                "output", prt_model_safe, cfg.experiments.ft_model_path, str(cfg.experiments.seed)
+                cfg.experiments.original_cwd,
+                "output",
+                prt_model_safe,
+                cfg.experiments.ft_model_path,
+                str(cfg.experiments.seed),
             )
+            os.makedirs(output_dir, exist_ok=True)
 
             # load or initialize task list
             task_names_file = os.path.join(output_dir, "task_names_todo.npy")
