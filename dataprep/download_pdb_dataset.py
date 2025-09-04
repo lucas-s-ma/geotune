@@ -1,7 +1,7 @@
 import os
 import requests
 
-pdb_ids_file = "pdb_ids.txt"
+pdb_ids_file = "dataprep/pdb_ids.txt"
 out_dir = "dataprep/cifs"
 fasta_dir = "fastas"
 
