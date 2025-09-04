@@ -41,6 +41,14 @@ for pdb_id in pdb_ids:
 
         # Download CIF
         cif_url = f"https://files.rcsb.org/download/{pdb_id}.cif"
+        cif_out = os.path.join(out_dir, f"{pdb_id}.cif")
+        r = requests.get(cif_url)
+        if r.status_code == 200:
+            with open(cif_out, "wb") as f:
+                f.write(r.content)
+            print(f"Downloaded CIF for {pdb_id}")
+        else:
+            print(f"Failed CIF for {pdb_id} (status {r.status_code})")
 
 
         # Download FASTA
