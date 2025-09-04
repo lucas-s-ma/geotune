@@ -55,6 +55,12 @@ def prepare_task_config(cfg: DictConfig, task_name: str) -> DictConfig:
 
 @hydra.main(version_base=None, config_path="config/", config_name="config.yaml")
 def pipeline(cfg: DictConfig) -> None:
+    # Convert relative paths to absolute paths
+    original_cwd = hydra.utils.get_original_cwd()
+    cfg.experiments.prt_model_path = os.path.join(original_cwd, cfg.experiments.prt_model_path)
+    cfg.experiments.ft_model_path = os.path.join(original_cwd, cfg.experiments.ft_model_path)
+    cfg.experiments.data_path = os.path.join(original_cwd, cfg.experiments.data_path)
+
     # Initialize W&B with full Hydra config
     # run_name = f"{cfg.experiments.prt_model_name.replace('/', '_')}_seed{cfg.experiments.seed}_{cfg.experiments.mode}"
     """
