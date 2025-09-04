@@ -75,13 +75,8 @@ def train(config: DictConfig):
         prefix_path=config.prefix_path
     )
 
-    # Using a small subset for a quick smoke test
-    indices = list(range(10)) # Use 10 samples for a quick run
-    dataset_train_subset = torch.utils.data.Subset(dataset_train, indices)
-
-
     dataloader_train = DataLoader(
-        dataset_train_subset,
+        dataset_train,
         batch_size=config.batch_size, # Use the batch size from config
         shuffle=True,
         collate_fn=collate_fn_with_tokenizer,
@@ -117,7 +112,8 @@ def train(config: DictConfig):
     logger.info("Starting training for smoke test...")
 
     run = wandb.init(
-        project="original amplify loss"
+        project="original amplify loss",
+        name="AMPLIFYYYYYY"
     )
 
     for epoch in range(config.n_epochs):
@@ -136,6 +132,10 @@ def train(config: DictConfig):
                 batch['attention_mask'].to(data_type),
                 frozen_trunk=False
             )
+            print(batch['seq_tokens'].to(torch.long).shape)
+            print(logit_mlm.shape)
+            print(logit_cls.shape)
+
             # Compute losses
             mlm_loss = loss_fn(
                 logit_mlm.view(-1, tokenizer.vocab_size), batch['seq_labels'].view(-1)
@@ -184,23 +184,3 @@ def train(config: DictConfig):
     torch.save(model.state_dict(), os.path.join(output_dir, "constraint_prototype.pt"))
     logger.info(f"Model saved to {os.path.join(output_dir, 'constraint_prototype.pt')}")
 
-
-if __name__ == '__main__':
-
-    # Example usage with a dummy config for smoke test
-    dummy_config = DictConfig({
-        'prt_model_name': 'facebook/esm2_t30_150M_UR50D',
-        'loss_weight': [1.0, 0.5, 0.5],
-        'sample_mode': 'loss_large',
-        'ratio': 1.0,
-        'struc_token_type': 'foldseek',
-        'struc_embed_type': 'gearnet',
-        'seed': 42,
-        'n_epochs': 1,
-        'batch_size': 2,
-        'eval_steps': 5,
-        'precision': 'no',
-        'prefix_path': 'dataprep',
-        'train_data_type': 'valid_train',
-    })
-    train(dummy_config)

@@ -56,7 +56,8 @@ def prepare_task_config(cfg: DictConfig, task_name: str) -> DictConfig:
 @hydra.main(version_base=None, config_path="config/", config_name="config.yaml")
 def pipeline(cfg: DictConfig) -> None:
     # Initialize W&B with full Hydra config
-    run_name = f"{cfg.experiments.prt_model_name.replace('/', '_')}_seed{cfg.experiments.seed}_{cfg.experiments.mode}"
+    # run_name = f"{cfg.experiments.prt_model_name.replace('/', '_')}_seed{cfg.experiments.seed}_{cfg.experiments.mode}"
+    """
     wandb.init(
         project="my-protein-experiments",
         name=run_name,
@@ -64,7 +65,7 @@ def pipeline(cfg: DictConfig) -> None:
         job_type=cfg.experiments.mode,
         tags=[cfg.experiments.mode]
     )
-
+    """
     # seed everything
     random.seed(cfg.experiments.seed)
     np.random.seed(cfg.experiments.seed)
