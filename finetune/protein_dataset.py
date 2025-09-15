@@ -42,20 +42,17 @@ class ProteinDataset(Dataset):
         )
         print(key_prefix_path)
 
-        self.key2seq_token = np.load(
-            os.path.join(key_prefix_path, "key_name2seq_token.npy"), allow_pickle=True
-        ).item()
+        self.seq_token_path = os.path.join(key_prefix_path, "key_name2seq_token.npy")
+        self.key2seq_token = None
 
-        struc_token_path = {
+        struc_token_path_map = {
             "foldseek": "key_name2foldseek_token.npy",
             "pst": "key_name2pst_token.npy",
             "protoken": "key_name2protoken_token.npy",
             "aido": "key_name2aido_token.npy",
-        }[struc_token_type]
-
-        self.key2struc_token = np.load(
-            os.path.join(key_prefix_path, struc_token_path), allow_pickle=True
-        ).item()
+        }
+        self.struc_token_path = os.path.join(key_prefix_path, struc_token_path_map[struc_token_type])
+        self.key2struc_token = None
 
         self.embed_prefix_path = {
             "af2": os.path.join(prefix_path, "af2_embedding"),
@@ -68,9 +65,13 @@ class ProteinDataset(Dataset):
         return len(self.keys)
 
     def __getitem__(self, idx):
+        if self.key2seq_token is None:
+            self.key2seq_token = np.load(self.seq_token_path, allow_pickle=True).item()
+            self.key2struc_token = np.load(self.struc_token_path, allow_pickle=True).item()
+
         key = self.keys[idx]
-        seq_token = self.key2seq_token[key]
-        struc_token = self.key2struc_token[key]
+        seq_token = self.key2seq_token.get(key)
+        struc_token = self.key2struc_token.get(key)
         weight = 1.0  # self.key2weight[key]
 
         embed_path = os.path.join(self.embed_prefix_path, f"{key}.npy")
