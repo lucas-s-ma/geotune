@@ -16,6 +16,7 @@ ratio: 1.0
 
 n_epochs: 20
 batch_size: 8
+truncation_seq_length: 1024
 opt_interval: 64 # 8 * 8 * 64 = 4096
 eval_steps: 15
 precision: bf16
