@@ -16,7 +16,8 @@ from model import AmplifyClassifier
 from protein_dataset import ProteinDataset, collate_fn
 
 # Choose device
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+# device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+device = "cpu"
 
 def train(config: DictConfig):
     """

@@ -3,10 +3,10 @@ import requests
 
 pdb_ids_file = "dataprep/pdb_ids.txt"
 out_dir = "dataprep/cifs"
-fasta_dir = "fastas"
+# fasta_dir = "fastas"
 
 os.makedirs(out_dir, exist_ok=True)
-os.makedirs(fasta_dir, exist_ok=True)
+# os.makedirs(fasta_dir, exist_ok=True)
 
 # Step 1: read IDs
 with open(pdb_ids_file) as f:
@@ -22,6 +22,10 @@ print(f"Found {len(pdb_ids)} PDB IDs")
 for pdb_id in pdb_ids:
     pdb_id = pdb_id.upper()  # ensure uppercase
     try:
+        cif_out = os.path.join(out_dir, f"{pdb_id}.cif")
+        if os.path.exists(cif_out):
+            print(f"CIF for {pdb_id} already exists, skipping.")
+            continue
         # Check if the entry is a protein-only structure
         info_url = f"https://data.rcsb.org/rest/v1/core/entry/{pdb_id}"
         info_r = requests.get(info_url)
@@ -50,7 +54,7 @@ for pdb_id in pdb_ids:
         else:
             print(f"Failed CIF for {pdb_id} (status {r.status_code})")
 
-
+        '''
         # Download FASTA
         fasta_url = f"https://www.rcsb.org/fasta/entry/{pdb_id}"
         fasta_out = os.path.join(fasta_dir, f"{pdb_id}.fasta")
@@ -61,6 +65,6 @@ for pdb_id in pdb_ids:
             print(f"Downloaded FASTA for {pdb_id}")
         else:
             print(f"Failed FASTA for {pdb_id} (status {r.status_code})")
-
+        '''
     except Exception as e:
         print(f"Error downloading {pdb_id}: {e}")
