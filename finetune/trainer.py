@@ -15,6 +15,8 @@ import constants
 from model import AmplifyClassifier
 from protein_dataset import ProteinDataset, collate_fn
 
+from peft import LoraConfig, get_peft_model
+
 # Choose device
 # device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 device = "cpu"
@@ -58,6 +60,18 @@ def train(config: DictConfig):
         struc_D=struc_D,
         output_D=output_D,
     ).to(device)
+
+    # LoRA configuration
+    lora_config = LoraConfig(
+        r=8,
+        lora_alpha=32,
+        target_modules=["query", "key", "value"],
+        lora_dropout=0.1,
+        bias="none",
+    )
+    model.trunk = get_peft_model(model.trunk, lora_config)
+    model.trunk.print_trainable_parameters()
+
     model = torch.compile(model)
 
     # Tokenizer
@@ -89,11 +103,11 @@ def train(config: DictConfig):
     # Loss, optimizer, scheduler
     loss_fn = torch.nn.CrossEntropyLoss(ignore_index=-100, reduction="none")
     param_groups = [
-        {'params': model.trunk.parameters(), 'lr': 1e-5}, # Lower LR for fine-tuning
+        {'params': model.trunk.parameters()}, # LoRA parameters are trainable
         {'params': model.classifier.parameters(), 'lr': 1e-4},
         {'params': model.cl_model.parameters(), 'lr': 1e-4},
     ]
-    optimizer = torch.optim.AdamW(param_groups, betas=(0.9, 0.95), weight_decay=0.01)
+    optimizer = torch.optim.AdamW(param_groups, lr=1e-4, betas=(0.9, 0.95), weight_decay=0.01)
     updates_per_epoch = len(dataloader_train)
     total_updates = updates_per_epoch * config.n_epochs
     warmup_updates = updates_per_epoch # 1 epoch warmup
@@ -133,7 +147,7 @@ def train(config: DictConfig):
             logit_mlm, logit_cls, hidden_state = model.main_forward(
                 batch['seq_tokens'].to(torch.long),
                 batch['attention_mask'].to(data_type),
-                frozen_trunk=False
+                frozen_trunk=True
             )
             print(batch['seq_tokens'].to(torch.long).shape)
             print(logit_mlm.shape)
