@@ -8,3 +8,5 @@ dataprep/important_data
 dataprep/fastas
 dataprep/cifs
 fastas
+*.out
+*.sh

@@ -76,6 +76,8 @@ def train(config: DictConfig):
         prefix_path=config.prefix_path
     )
 
+    print('Initialization done!!!')
+
     dataloader_train = DataLoader(
         dataset_train,
         batch_size=config.batch_size, # Use the batch size from config
@@ -126,7 +128,7 @@ def train(config: DictConfig):
             for k, v in batch.items():
                 if isinstance(v, torch.Tensor):
                     batch[k] = v.to(device)
-
+            print('pre-forward')
             # Forward
             logit_mlm, logit_cls, hidden_state = model.main_forward(
                 batch['seq_tokens'].to(torch.long),

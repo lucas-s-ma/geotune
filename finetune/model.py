@@ -144,9 +144,11 @@ class AmplifyClassifier(nn.Module):
         """
 
         with torch.no_grad() if frozen_trunk else torch.enable_grad():
+            print('pre - forwards trunk')
             model_output = self.trunk(
                 input_ids, attention_mask, output_hidden_states=True
             )
+            print('forwards trunk done')
             h = model_output.hidden_states[layer_idx]
         if normalize_hidden_states:
             h = torch.nn.functional.normalize(h, p=2, dim=-1)
