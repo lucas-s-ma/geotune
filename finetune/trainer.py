@@ -66,7 +66,7 @@ def train(config: DictConfig):
         r=8,
         lora_alpha=32,
         target_modules=["query", "key", "value"],
-        lora_dropout=0.1,
+        lora_dropout=0,
         bias="none",
     )
     model.trunk = get_peft_model(model.trunk, lora_config)
