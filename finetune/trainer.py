@@ -3,18 +3,15 @@ import logging
 import os
 import time
 import wandb
-
 import numpy as np
 import torch
 from omegaconf import DictConfig
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 from transformers import AutoTokenizer, get_cosine_schedule_with_warmup
-
 import constants
 from model import AmplifyClassifier
 from protein_dataset import ProteinDataset, collate_fn
-
 from peft import LoraConfig, get_peft_model
 
 # Choose device

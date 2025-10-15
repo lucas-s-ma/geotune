@@ -10,3 +10,4 @@ dataprep/cifs
 fastas
 *.out
 *.sh
+coamp.yml
