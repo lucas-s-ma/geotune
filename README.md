@@ -1,1 +1,3 @@
-# co-amp
+# GeoTune
+
+GeoTune is a lightweight method for fine-tuning Pre-trained Language Models (PLMs) to understand protein structures. By using constraint-based learning, this approach injects structural information into the model without altering the original transformer architecture. This makes the fine-tuning process computationally efficient while significantly enhancing the model's awareness of protein structure in addition to sequence.
