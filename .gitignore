@@ -4,3 +4,5 @@ __pycache__/
 wandb/
 data/pdb
 data/processed
+data/pdb_bk
+data/processed_bk
