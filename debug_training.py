@@ -71,10 +71,10 @@ def debug_training_bottleneck():
         print(f"Loading processed dataset from {processed_dataset_path}")
         dataset = EfficientProteinDataset(data_path, max_seq_len=512)
     
-    # Create a small dataloader for debugging
+    # Create a dataloader for debugging - using larger batch size for better efficiency
     dataloader = DataLoader(
         dataset,
-        batch_size=2,  # Small batch size
+        batch_size=8,  # Increased batch size for better efficiency
         shuffle=False,  # No shuffle for predictable debugging
         collate_fn=collate_fn,
         num_workers=0  # Use 0 to avoid multiprocessing issues during debugging

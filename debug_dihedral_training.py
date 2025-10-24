@@ -70,7 +70,7 @@ def debug_dihedral_training():
     # Create a small dataloader for debugging
     dataloader = DataLoader(
         dataset,
-        batch_size=2,  # Small batch size
+        batch_size=8,  # Increased batch size for better efficiency
         shuffle=False,  # No shuffle for predictable debugging
         collate_fn=collate_fn,
         num_workers=0  # Use 0 to avoid multiprocessing issues during debugging

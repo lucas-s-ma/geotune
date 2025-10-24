@@ -31,7 +31,7 @@ def parse_args():
     parser.add_argument("--model_name", type=str, default="facebook/esm2_t30_150M_UR50D", 
                        help="ESM model name or path")
     parser.add_argument("--output_dir", type=str, default="outputs", help="Output directory")
-    parser.add_argument("--batch_size", type=int, default=4, help="Batch size")
+    parser.add_argument("--batch_size", type=int, default=8, help="Batch size")
     parser.add_argument("--learning_rate", type=float, default=1e-3, help="Learning rate")
     parser.add_argument("--num_epochs", type=int, default=10, help="Number of epochs")
     parser.add_argument("--warmup_steps", type=int, default=100, help="Warmup steps")
