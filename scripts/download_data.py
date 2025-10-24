@@ -32,12 +32,17 @@ def download_protein_data(pdb_ids, output_dir, include_chains=None):
     for pdb_id in pdb_ids:
         pdb_id = pdb_id.strip().upper()
         print(f"Downloading {pdb_id}...")
+
+        # check if this is already in output_dir
+        if os.path.exists(os.path.join(output_dir, f"{pdb_id}.pdb")):
+            print(f"{pdb_id} already exists in {output_dir}, skipping download.")
+            success_count += 1
+            continue
         
         try:
             # Check if the entry is a protein-only structure
             info_url = f"https://data.rcsb.org/rest/v1/core/entry/{pdb_id}"
             info_r = requests.get(info_url)
-            
             if info_r.status_code == 200:
                 info_data = info_r.json()
                 entry_info = info_data.get("rcsb_entry_info", {})

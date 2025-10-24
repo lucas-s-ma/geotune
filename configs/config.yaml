@@ -37,7 +37,7 @@ data:
 # Logging configuration
 logging:
   use_wandb: true         # Whether to use Weights & Biases
-  project_name: "geotune_new"  # W&B project name
+  project_name: "geotune_online"  # W&B project name
   
 # Constraint configuration
 constraints:
