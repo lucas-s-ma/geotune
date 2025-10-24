@@ -20,9 +20,11 @@ def check_foldseek_installation() -> bool:
         bool: True if foldseek is available, False otherwise
     """
     try:
-        result = subprocess.run(['foldseek', '--version'], 
+        result = subprocess.run(['foldseek', '--help'], 
                               capture_output=True, text=True, check=False)
-        if result.returncode == 0:
+        # Check if the output contains expected foldseek information
+        # rather than relying on exit code since some foldseek versions don't exit 0 for help
+        if result.returncode == 0 or 'Foldseek' in result.stdout:
             print("Foldseek is available")
             return True
         else:
