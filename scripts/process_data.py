@@ -19,7 +19,7 @@ project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root))
 
 from utils.data_utils import ProteinStructureDataset
-from scripts.process_structural_tokens import process_pdb_file
+from scripts.generate_foldseek_tokens import generate_foldseek_tokens
 
 
 # The inefficient 'process_pdb_to_features' function has been removed.
@@ -42,7 +42,7 @@ def create_efficient_dataset(raw_dir, output_dir, include_structural_tokens=True
     
     # Generate structural tokens if requested
     if include_structural_tokens:
-        print("Generating structural tokens for each protein...")
+        print("Generating Foldseek structural tokens for each protein...")
         structural_tokens_list = []
         
         # Get list of PDB files to process
@@ -53,7 +53,7 @@ def create_efficient_dataset(raw_dir, output_dir, include_structural_tokens=True
         
         print(f"Found {len(pdb_files)} PDB files to process for structural tokens")
         
-        for i, pdb_file in enumerate(tqdm(pdb_files, desc="Generating structural tokens")):
+        for i, pdb_file in enumerate(tqdm(pdb_files, desc="Generating Foldseek structural tokens")):
             pdb_name = os.path.splitext(os.path.basename(pdb_file))[0]
             
             # Find corresponding protein data in the processed dataset
@@ -64,18 +64,19 @@ def create_efficient_dataset(raw_dir, output_dir, include_structural_tokens=True
                     break
             
             if protein_data is not None:
-                # Generate structural tokens for this PDB file
+                # Generate structural tokens for this PDB file using Foldseek
                 try:
-                    tokens = process_pdb_file(pdb_file, method="contact")  # Using contact-based method
-                    if tokens:
+                    tokens = generate_foldseek_tokens(pdb_file)
+                    if tokens is not None and len(tokens) > 0:
                         structural_tokens_list.append({
                             'protein_id': pdb_name,
                             'structural_tokens': tokens
                         })
+                        print(f"  Generated {len(tokens)} tokens for {pdb_name}")
                     else:
-                        print(f"Failed to generate tokens for {pdb_name}")
+                        print(f"  Failed to generate tokens for {pdb_name}")
                 except Exception as e:
-                    print(f"Error generating tokens for {pdb_name}: {e}")
+                    print(f"  Error generating tokens for {pdb_name}: {e}")
             else:
                 print(f"No protein data found for {pdb_name}")
     
