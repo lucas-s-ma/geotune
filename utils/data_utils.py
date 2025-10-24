@@ -173,6 +173,22 @@ class ProteinStructureDataset(Dataset):
             'protein_id': protein['id']
         }
         
+        # Add structural tokens if available
+        if self.include_structural_tokens and len(self.structural_tokens) > idx:
+            struct_tokens = self.structural_tokens[idx]
+            struct_seq = struct_tokens['structural_tokens']  # Assuming it's in the same format
+            
+            # Truncate structural tokens to match sequence length
+            if len(struct_seq) > self.max_seq_len:
+                struct_seq = struct_seq[:self.max_seq_len]
+            
+            # Pad or truncate structural tokens to max length
+            if len(struct_seq) < self.max_seq_len:
+                padding_length = self.max_seq_len - len(struct_seq)
+                struct_seq.extend([-100] * padding_length)  # Use -100 as ignore index for padding
+            
+            result['structural_tokens'] = torch.tensor(struct_seq, dtype=torch.long)
+        
         return result
     
     def sequence_to_tokens(self, sequence):
@@ -200,7 +216,7 @@ def collate_fn(batch):
     ca_coords = torch.stack([item['ca_coords'] for item in batch])
     c_coords = torch.stack([item['c_coords'] for item in batch])
     
-    return {
+    result = {
         'input_ids': input_ids,
         'attention_mask': attention_mask,
         'n_coords': n_coords,
@@ -209,6 +225,13 @@ def collate_fn(batch):
         'seq_lens': [item['seq_len'] for item in batch],
         'protein_ids': [item['protein_id'] for item in batch]
     }
+    
+    # Add structural tokens if they exist in the batch
+    if 'structural_tokens' in batch[0]:
+        structural_tokens = torch.stack([item['structural_tokens'] for item in batch])
+        result['structural_tokens'] = structural_tokens
+    
+    return result
 
 
 def load_structure_from_pdb(pdb_path, chain_id=None):
@@ -290,17 +313,32 @@ class EfficientProteinDataset(Dataset):
     Efficient dataset that loads pre-processed protein data from a single file
     This avoids re-parsing PDB files every time, significantly improving performance
     """
-    def __init__(self, processed_data_path, max_seq_len=1024):
+    def __init__(self, processed_data_path, max_seq_len=1024, include_structural_tokens=False):
         """
         Args:
             processed_data_path: Path to directory containing pre-processed dataset.pkl
             max_seq_len: Maximum sequence length
+            include_structural_tokens: Whether to include precomputed structural tokens (Foldseek)
         """
         self.max_seq_len = max_seq_len
+        self.include_structural_tokens = include_structural_tokens
         
         # Load the pre-processed dataset
         dataset_file = os.path.join(processed_data_path, "processed_dataset.pkl")
         mapping_file = os.path.join(processed_data_path, "id_mapping.json")
+        
+        # Also look for structural token file
+        if include_structural_tokens:
+            struct_token_file = os.path.join(processed_data_path, "structural_tokens.pkl")
+            if os.path.exists(struct_token_file):
+                with open(struct_token_file, 'rb') as f:
+                    self.structural_tokens = pickle.load(f)
+                    print(f"Loaded structural tokens for {len(self.structural_tokens)} proteins")
+            else:
+                print(f"Warning: Structural tokens file not found at {struct_token_file}. "
+                      f"Please prepare structural tokens using Foldseek method. "
+                      f"Continuing without structural tokens.")
+                self.include_structural_tokens = False
         
         if os.path.exists(dataset_file):
             with open(dataset_file, 'rb') as f:
@@ -362,6 +400,22 @@ class EfficientProteinDataset(Dataset):
             'seq_len': len(protein['sequence']),
             'protein_id': protein['id']
         }
+        
+        # Add structural tokens if available
+        if self.include_structural_tokens and len(self.structural_tokens) > idx:
+            struct_tokens = self.structural_tokens[idx]
+            struct_seq = struct_tokens['structural_tokens']  # Assuming it's in the same format
+            
+            # Truncate structural tokens to match sequence length
+            if len(struct_seq) > self.max_seq_len:
+                struct_seq = struct_seq[:self.max_seq_len]
+            
+            # Pad or truncate structural tokens to max length
+            if len(struct_seq) < self.max_seq_len:
+                padding_length = self.max_seq_len - len(struct_seq)
+                struct_seq.extend([-100] * padding_length)  # Use -100 as ignore index for padding
+            
+            result['structural_tokens'] = torch.tensor(struct_seq, dtype=torch.long)
         
         return result
     

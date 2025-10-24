@@ -25,7 +25,7 @@ training:
   learning_rate: 1e-3     # Learning rate
   num_epochs: 10          # Number of epochs
   warmup_steps: 100       # Warmup steps for scheduler
-  max_seq_len: 100        # Maximum sequence length
+  max_seq_len: 1024       # Maximum sequence length
   seed: 42                # Random seed
   output_dir: "outputs"   # Output directory
 

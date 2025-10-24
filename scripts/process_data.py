@@ -19,22 +19,65 @@ project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root))
 
 from utils.data_utils import ProteinStructureDataset
+from scripts.process_structural_tokens import process_pdb_file
 
 
 # The inefficient 'process_pdb_to_features' function has been removed.
 
-def create_efficient_dataset(raw_dir, output_dir):
+def create_efficient_dataset(raw_dir, output_dir, include_structural_tokens=True):
     """
     Create an efficient dataset file that contains all processed protein data in one file
     
     Args:
         raw_dir: Directory containing PDB files
         output_dir: Directory to save the processed dataset file
+        include_structural_tokens: Whether to generate structural tokens from PDB files
     """
     print(f"Creating efficient dataset from {raw_dir}")
     
     # Use the ProteinStructureDataset to process all files at once
     temp_dataset = ProteinStructureDataset(raw_dir)
+    
+    print(f"Processed {len(temp_dataset.proteins)} proteins from PDB files")
+    
+    # Generate structural tokens if requested
+    if include_structural_tokens:
+        print("Generating structural tokens for each protein...")
+        structural_tokens_list = []
+        
+        # Get list of PDB files to process
+        pdb_files = []
+        for file in os.listdir(raw_dir):
+            if file.lower().endswith('.pdb'):
+                pdb_files.append(os.path.join(raw_dir, file))
+        
+        print(f"Found {len(pdb_files)} PDB files to process for structural tokens")
+        
+        for i, pdb_file in enumerate(tqdm(pdb_files, desc="Generating structural tokens")):
+            pdb_name = os.path.splitext(os.path.basename(pdb_file))[0]
+            
+            # Find corresponding protein data in the processed dataset
+            protein_data = None
+            for protein in temp_dataset.proteins:
+                if protein['id'] == pdb_name:
+                    protein_data = protein
+                    break
+            
+            if protein_data is not None:
+                # Generate structural tokens for this PDB file
+                try:
+                    tokens = process_pdb_file(pdb_file, method="contact")  # Using contact-based method
+                    if tokens:
+                        structural_tokens_list.append({
+                            'protein_id': pdb_name,
+                            'structural_tokens': tokens
+                        })
+                    else:
+                        print(f"Failed to generate tokens for {pdb_name}")
+                except Exception as e:
+                    print(f"Error generating tokens for {pdb_name}: {e}")
+            else:
+                print(f"No protein data found for {pdb_name}")
     
     # Save the entire processed dataset to a single file
     os.makedirs(output_dir, exist_ok=True)
@@ -55,6 +98,13 @@ def create_efficient_dataset(raw_dir, output_dir):
         json.dump(id_mapping, f)
     
     print(f"Saved ID mapping to {mapping_file}")
+    
+    # Save structural tokens if generated
+    if include_structural_tokens and len(structural_tokens_list) > 0:
+        struct_token_file = os.path.join(output_dir, "structural_tokens.pkl")
+        with open(struct_token_file, 'wb') as f:
+            pickle.dump(structural_tokens_list, f)
+        print(f"Saved structural tokens for {len(structural_tokens_list)} proteins to {struct_token_file}")
     
     return dataset_file, mapping_file
 
@@ -219,6 +269,8 @@ def main():
                         help="PDB file extensions to process (default: .pdb .ent)")
     parser.add_argument("--create_efficient_dataset", action="store_true",
                         help="Create a single efficient dataset file for fast loading during training")
+    parser.add_argument("--no_structural_tokens", action="store_true",
+                        help="Skip generation of structural tokens (for faster processing)")
     
     args = parser.parse_args()
     
@@ -227,9 +279,11 @@ def main():
     # The --create_efficient_dataset flag provides the fastest experience for both processing and training.
     if args.create_efficient_dataset:
         print("Creating single efficient dataset file for fast loading...")
-        create_efficient_dataset(args.raw_dir, args.output_dir)
+        include_tokens = not args.no_structural_tokens
+        create_efficient_dataset(args.raw_dir, args.output_dir, include_structural_tokens=include_tokens)
     else:
         # Otherwise, process into individual files using the now-efficient method.
+        # Note: Individual file processing doesn't include structural tokens for consistency
         process_directory(args.raw_dir, args.output_dir, args.pdb_extensions)
     
     # Optionally validate the processed data

@@ -19,7 +19,7 @@ def download_protein_data(pdb_ids, output_dir, include_chains=None):
     
     Args:
         pdb_ids: List of PDB IDs to download
-        output_dir: Output directory to save files
+        output_dir: Output directory to save files2
         include_chains: List of chain IDs to include (None for all chains)
     """
     os.makedirs(output_dir, exist_ok=True)
@@ -39,6 +39,14 @@ def download_protein_data(pdb_ids, output_dir, include_chains=None):
             success_count += 1
             continue
         
+        # check if this is already in output_dir
+        if os.path.exists(os.path.join(output_dir, f"{pdb_id}.pdb")):
+            print(f"{pdb_id} already exists in {output_dir}, skipping download.")
+            success_count += 1
+            continue
+        
+
+
         try:
             # Check if the entry is a protein-only structure
             info_url = f"https://data.rcsb.org/rest/v1/core/entry/{pdb_id}"
