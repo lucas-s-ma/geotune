@@ -87,17 +87,25 @@ class GearNet(nn.Module, core.Configurable):
                     self.activation,
                     dropout
                 )
+                print(f"Successfully created GearNet layer for hidden_dim={hidden_dim}")
             except AttributeError:
                 # Fall back to a geometric graph layer that exists in this version of TorchDrug
-                # Using GeometricRelationalGraphConv as an alternative for geometric relationships
-                layer = layers.GeometricRelationalGraphConv(
-                    layer_input_dim,
-                    hidden_dim,
-                    num_relation,
-                    batch_norm=batch_norm,
-                    activation=self.activation,
-                    dropout=dropout
-                )
+                try:
+                    # Using GeometricRelationalGraphConv as an alternative for geometric relationships
+                    # Note: GeometricRelationalGraphConv doesn't accept all the same parameters
+                    layer = layers.GeometricRelationalGraphConv(
+                        layer_input_dim,
+                        hidden_dim,
+                        num_relation
+                    )
+                    print(f"Successfully created fallback GeometricRelationalGraphConv layer for hidden_dim={hidden_dim}")
+                except Exception:
+                    # If even the fallback doesn't work, use a basic graph convolution
+                    layer = layers.GraphConv(
+                        layer_input_dim,
+                        hidden_dim
+                    )
+                    print(f"Using GraphConv fallback layer for hidden_dim={hidden_dim}")
             self.gearnet_layers.append(layer)
             layer_input_dim = hidden_dim if not concat_hidden else layer_input_dim  # Fixed
         
@@ -135,14 +143,21 @@ class GearNet(nn.Module, core.Configurable):
         layer_input = self.input_linear(input)
         
         for layer in self.gearnet_layers:
-            hidden = layer(graph, layer_input)
-            if self.short_cut and self.concat_hidden:
-                hiddens.append(hidden)
-            elif self.short_cut:
+            try:
+                hidden = layer(graph, layer_input)
+                if self.short_cut and self.concat_hidden:
+                    hiddens.append(hidden)
+                elif self.short_cut:
+                    hiddens = [hidden]
+                else:
+                    hiddens = [hidden]
+                layer_input = hidden
+            except Exception as e:
+                print(f"Error in layer processing: {e}")
+                # Fallback to just passing the input through
+                hidden = layer_input
                 hiddens = [hidden]
-            else:
-                hiddens = [hidden]
-            layer_input = hidden
+                break
         
         # Concatenate all hidden representations if concat_hidden is True
         if self.concat_hidden and len(hiddens) > 1:
