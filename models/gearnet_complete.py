@@ -98,7 +98,6 @@ class ProteinGraphFromCoordinates:
         return batched_graph
 
 
-@R.register("models.GearNet")
 class GearNet(nn.Module, core.Configurable):
     """
     GearNet (Geometric graph neural network) implementation for protein structure analysis
@@ -160,7 +159,8 @@ class GearNet(nn.Module, core.Configurable):
         
         for i, hidden_dim in enumerate(hidden_dims):
             # Use the actual GearNet layer from TorchDrug
-            layer = layers.GearNet(
+            from torchdrug.models.gearnet import GeometryAwareRelationalGraphNeuralNetwork
+            layer = GeometryAwareRelationalGraphNeuralNetwork(
                 layer_input_dim,
                 hidden_dim,
                 num_relation,

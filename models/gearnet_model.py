@@ -6,14 +6,14 @@ GearNet is a geometric graph neural network for protein representation learning
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torchdrug import core, data, layers, models
+from torchdrug import core, data, layers
 from torchdrug.layers import geometry
 from torchdrug.core import Registry as R
 import numpy as np
 from typing import Dict, List, Optional, Tuple
 
 
-@R.register("models.GearNet")
+@R.register("models.GearNetStruct")
 class GearNet(nn.Module, core.Configurable):
     """
     GearNet (Geometric graph neural network) implementation for protein structure analysis
@@ -66,6 +66,9 @@ class GearNet(nn.Module, core.Configurable):
         else:
             self.activation = nn.ReLU()  # default
         
+        # Import GearNet layer inside the initialization to avoid ESM import issues
+        from torchdrug.models.gearnet import GeometryAwareRelationalGraphNeuralNetwork
+        
         # Initial embedding layer
         self.input_linear = nn.Linear(input_dim, hidden_dims[0])
         
@@ -74,8 +77,8 @@ class GearNet(nn.Module, core.Configurable):
         layer_input_dim = hidden_dims[0]
         
         for i, hidden_dim in enumerate(hidden_dims):
-            # Use the actual GearNet layer from TorchDrug models
-            layer = models.GearNet(
+            # Use the actual GearNet layer from TorchDrug
+            layer = GeometryAwareRelationalGraphNeuralNetwork(
                 layer_input_dim,
                 hidden_dim,
                 num_relation,
@@ -171,7 +174,9 @@ class GearNetFromCoordinates(nn.Module):
         self.freeze = freeze
 
         # Create actual GearNet model from TorchDrug
-        self.gearnet_model = models.GearNet(
+        # Import here to avoid ESM-related import issues
+        from torchdrug.models.gearnet import GeometryAwareRelationalGraphNeuralNetwork
+        self.gearnet_model = GeometryAwareRelationalGraphNeuralNetwork(
             input_dim=hidden_dim,
             hidden_dims=[512, 512, 512, 512],
             num_relation=7,
