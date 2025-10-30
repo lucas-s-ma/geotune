@@ -6,7 +6,7 @@ GearNet is a geometric graph neural network for protein representation learning
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torchdrug import core, data, layers
+from torchdrug import core, data, layers, models
 from torchdrug.layers import geometry
 from torchdrug.core import Registry as R
 import numpy as np
@@ -74,8 +74,8 @@ class GearNet(nn.Module, core.Configurable):
         layer_input_dim = hidden_dims[0]
         
         for i, hidden_dim in enumerate(hidden_dims):
-            # Use the actual GearNet layer from TorchDrug
-            layer = layers.GearNet(
+            # Use the actual GearNet layer from TorchDrug models
+            layer = models.GearNet(
                 layer_input_dim,
                 hidden_dim,
                 num_relation,
@@ -171,7 +171,7 @@ class GearNetFromCoordinates(nn.Module):
         self.freeze = freeze
 
         # Create actual GearNet model from TorchDrug
-        self.gearnet_model = GearNet(
+        self.gearnet_model = models.GearNet(
             input_dim=hidden_dim,
             hidden_dims=[512, 512, 512, 512],
             num_relation=7,
