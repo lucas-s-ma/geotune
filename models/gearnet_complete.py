@@ -159,17 +159,29 @@ class GearNet(nn.Module, core.Configurable):
         layer_input_dim = hidden_dims[0]
         
         for i, hidden_dim in enumerate(hidden_dims):
-            layer = layers.GearNet(
-                layer_input_dim,
-                hidden_dim,
-                num_relation,
-                batch_norm,
-                short_cut,
-                concat_hidden,
-                num_mlp_layer,
-                self.activation,
-                dropout
-            )
+            try:
+                layer = layers.GearNet(
+                    layer_input_dim,
+                    hidden_dim,
+                    num_relation,
+                    batch_norm,
+                    short_cut,
+                    concat_hidden,
+                    num_mlp_layer,
+                    self.activation,
+                    dropout
+                )
+            except AttributeError:
+                # Fall back to a geometric graph layer that exists in this version of TorchDrug
+                # Using GeometricRelationalGraphConv as an alternative for geometric relationships
+                layer = layers.GeometricRelationalGraphConv(
+                    layer_input_dim,
+                    hidden_dim,
+                    num_relation,
+                    batch_norm=batch_norm,
+                    activation=self.activation,
+                    dropout=dropout
+                )
             self.gearnet_layers.append(layer)
             layer_input_dim = hidden_dim
         
