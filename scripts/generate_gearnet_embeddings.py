@@ -20,7 +20,7 @@ sys.path.insert(0, str(project_root))
 from utils.structure_alignment_utils import PretrainedGNNWrapper
 
 
-def generate_gearnet_embeddings_for_protein(n_coords, ca_coords, c_coords, model):
+def generate_gearnet_embeddings_for_protein(n_coords, ca_coords, c_coords, model, device):
     """
     Generate GearNet embeddings for a single protein
     
@@ -29,18 +29,19 @@ def generate_gearnet_embeddings_for_protein(n_coords, ca_coords, c_coords, model
         ca_coords: (seq_len, 3) CA atom coordinates
         c_coords: (seq_len, 3) C atom coordinates
         model: PretrainedGNNWrapper instance
+        device: torch.device to move tensors to
     
     Returns:
         embeddings: (seq_len, hidden_dim) structural embeddings
     """
     # Add batch dimension and move to device
-    n_coords = torch.tensor(n_coords, dtype=torch.float32).unsqueeze(0)  # (1, seq_len, 3)
-    ca_coords = torch.tensor(ca_coords, dtype=torch.float32).unsqueeze(0)  # (1, seq_len, 3)
-    c_coords = torch.tensor(c_coords, dtype=torch.float32).unsqueeze(0)  # (1, seq_len, 3)
+    n_coords = torch.tensor(n_coords, dtype=torch.float32).unsqueeze(0).to(device)
+    ca_coords = torch.tensor(ca_coords, dtype=torch.float32).unsqueeze(0).to(device)
+    c_coords = torch.tensor(c_coords, dtype=torch.float32).unsqueeze(0).to(device)
     
     # Generate embeddings using the GearNet model
-    with torch.no_grad():  # No gradients needed for frozen model
-        embeddings = model(n_coords, ca_coords, c_coords)  # (1, seq_len, hidden_dim)
+    with torch.no_grad():
+        embeddings = model(n_coords, ca_coords, c_coords)
     
     # Remove batch dimension and convert to numpy
     embeddings = embeddings.squeeze(0).cpu().numpy()  # (seq_len, hidden_dim)
@@ -97,7 +98,7 @@ def generate_gearnet_embeddings_for_dataset(processed_dataset_path, output_dir, 
             
             # Generate embeddings for this protein
             embeddings = generate_gearnet_embeddings_for_protein(
-                n_coords, ca_coords, c_coords, model
+                n_coords, ca_coords, c_coords, model, device
             )
             
             # Save embeddings with protein ID
