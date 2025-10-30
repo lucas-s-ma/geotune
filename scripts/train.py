@@ -329,6 +329,7 @@ def validate(model, dataloader, dihedral_constraints, device, config, structure_
                 )
                 struct_align_loss = struct_align_results['total_loss']
             
+            # !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
             combined_loss = mlm_loss + config.model.constraint_weight * total_dihedral_loss + struct_align_loss
             
             total_loss += combined_loss.item()
@@ -449,8 +450,8 @@ def main():
         physical_weight=0.5
     ).to(device)
     
-    # Initialize frozen pre-trained GNN (e.g. GearNet) - using stub implementation
-    frozen_gnn = PretrainedGNNWrapper(hidden_dim=esm_hidden_size, use_gearnet_stub=True).to(device)
+    # Initialize frozen pre-trained GNN (e.g. GearNet) - try to use proper implementation
+    frozen_gnn = PretrainedGNNWrapper(hidden_dim=esm_hidden_size, use_gearnet_stub=False).to(device)
     frozen_gnn.eval()  # Set to evaluation mode to ensure no gradients
     
     # Load dataset

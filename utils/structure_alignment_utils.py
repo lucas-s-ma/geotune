@@ -165,10 +165,68 @@ class StructureAlignmentLoss(nn.Module):
         return physical_loss
 
 
-class GearNetWrapper(nn.Module):
+class PretrainedGNNWrapper(nn.Module):
     """
-    Wrapper for GearNet or similar pre-trained protein Graph Neural Network
-    This module can be loaded with pre-trained weights and frozen during training
+    Wrapper for a frozen, pre-trained protein Graph Neural Network (e.g. GearNet)
+    This module is frozen during training to provide structural embeddings
+    Can load from local path or HuggingFace hub if available
+    """
+    def __init__(self, model_path=None, hidden_dim=512, freeze=True, use_gearnet_stub=False):
+        """
+        Args:
+            model_path: Path to pre-trained model (not currently available for GearNet)
+            hidden_dim: Hidden dimension for the model
+            freeze: Whether to freeze the model parameters
+            use_gearnet_stub: Whether to use the stub implementation when real model isn't available
+        """
+        super().__init__()
+        
+        # Try to import and use the real GearNet implementation
+        try:
+            from models.gearnet_model import create_pretrained_gearnet
+            self.backbone = create_pretrained_gearnet(
+                hidden_dim=hidden_dim,
+                pretrained_path=model_path,
+                freeze=freeze
+            )
+            print("Successfully loaded GearNet implementation from TorchDrug")
+        except (ImportError, AttributeError) as e:
+            print(f"Could not load TorchDrug GearNet implementation: {e}")
+            print("Using fallback implementation")
+            
+            if use_gearnet_stub:
+                # Use our simplified GearNet implementation
+                self.backbone = self._create_stub_gearnet(hidden_dim, freeze)
+            elif model_path:
+                # In the future, this could load a real pre-trained model
+                self.backbone = self._create_stub_gearnet(hidden_dim, freeze)
+                print(f"Warning: Real model at {model_path} not available, using stub implementation")
+            else:
+                self.backbone = self._create_stub_gearnet(hidden_dim, freeze)
+                print("Using stub implementation for pre-trained GNN")
+    
+    def _create_stub_gearnet(self, hidden_dim, freeze):
+        """Create a stub GearNet implementation if the real one is not available"""
+        return StubGearNetWrapper(hidden_dim, freeze)
+    
+    def forward(self, n_coords, ca_coords, c_coords):
+        """
+        Forward pass through the frozen GNN to get structural embeddings
+        
+        Args:
+            n_coords: (batch_size, seq_len, 3) N atom coordinates
+            ca_coords: (batch_size, seq_len, 3) CA atom coordinates
+            c_coords: (batch_size, seq_len, 3) C atom coordinates
+        
+        Returns:
+            pGNN_embeddings: (batch_size, seq_len, hidden_dim) structural embeddings
+        """
+        return self.backbone(n_coords, ca_coords, c_coords)
+
+
+class StubGearNetWrapper(nn.Module):
+    """
+    Stub implementation of GearNet - this is the old implementation for fallback
     """
     def __init__(self, hidden_dim=512, num_layers=4, freeze=True):
         """
@@ -230,50 +288,3 @@ class GearNetWrapper(nn.Module):
         embeddings = self.projection(x)
         
         return embeddings
-
-
-class PretrainedGNNWrapper(nn.Module):
-    """
-    Wrapper for a frozen, pre-trained protein Graph Neural Network (e.g. GearNet)
-    This module is frozen during training to provide structural embeddings
-    Can load from local path or HuggingFace hub if available
-    """
-    def __init__(self, model_path=None, hidden_dim=512, freeze=True, use_gearnet_stub=True):
-        """
-        Args:
-            model_path: Path to pre-trained model (not currently available for GearNet)
-            hidden_dim: Hidden dimension for the model
-            freeze: Whether to freeze the model parameters
-            use_gearnet_stub: Whether to use the stub implementation when real model isn't available
-        """
-        super().__init__()
-        
-        if use_gearnet_stub:
-            # Use our simplified GearNet implementation
-            self.backbone = GearNetWrapper(hidden_dim=hidden_dim, freeze=freeze)
-        elif model_path:
-            # In the future, this could load a real pre-trained model
-            # backbone = torch.load(model_path)
-            # self.backbone = backbone
-            # if freeze:
-            #     for param in self.backbone.parameters():
-            #         param.requires_grad = False
-            self.backbone = GearNetWrapper(hidden_dim=hidden_dim, freeze=freeze)
-            print(f"Warning: Real model at {model_path} not available, using stub implementation")
-        else:
-            self.backbone = GearNetWrapper(hidden_dim=hidden_dim, freeze=freeze)
-            print("Using stub implementation for pre-trained GNN")
-    
-    def forward(self, n_coords, ca_coords, c_coords):
-        """
-        Forward pass through the frozen GNN to get structural embeddings
-        
-        Args:
-            n_coords: (batch_size, seq_len, 3) N atom coordinates
-            ca_coords: (batch_size, seq_len, 3) CA atom coordinates
-            c_coords: (batch_size, seq_len, 3) C atom coordinates
-        
-        Returns:
-            pGNN_embeddings: (batch_size, seq_len, hidden_dim) structural embeddings
-        """
-        return self.backbone(n_coords, ca_coords, c_coords)

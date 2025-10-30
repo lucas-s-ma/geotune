@@ -19,7 +19,7 @@ project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root))
 
 from utils.data_utils import ProteinStructureDataset
-from scripts.generate_foldseek_tokens import generate_foldseek_tokens
+from scripts.generate_foldseek_3di import generate_foldseek_tokens, check_foldseek_installation
 
 
 # The inefficient 'process_pdb_to_features' function has been removed.
@@ -272,6 +272,8 @@ def main():
                         help="Create a single efficient dataset file for fast loading during training")
     parser.add_argument("--no_structural_tokens", action="store_true",
                         help="Skip generation of structural tokens (for faster processing)")
+    parser.add_argument("--generate_gearnet_embeddings", action="store_true",
+                        help="Generate GearNet embeddings for processed proteins")
     
     args = parser.parse_args()
     
@@ -290,6 +292,27 @@ def main():
     # Optionally validate the processed data
     if args.validate:
         validate_processed_data(args.output_dir)
+    
+    # If requested, generate GearNet embeddings
+    if args.generate_gearnet_embeddings:
+        print("Generating GearNet embeddings...")
+        
+        # Import here to avoid issues if the dependencies are not available
+        try:
+            from scripts.generate_gearnet_embeddings import generate_gearnet_embeddings_for_dataset
+            
+            # Generate GearNet embeddings for the processed dataset
+            embeddings_output_dir = os.path.join(project_root, "embeddings")
+            generate_gearnet_embeddings_for_dataset(
+                processed_dataset_path=args.output_dir,
+                output_dir=embeddings_output_dir
+            )
+            print(f"GearNet embeddings saved to {embeddings_output_dir}")
+        except ImportError as e:
+            print(f"Could not import generate_gearnet_embeddings: {e}")
+            print("Make sure all dependencies are installed.")
+        except Exception as e:
+            print(f"Error generating GearNet embeddings: {e}")
 
 
 if __name__ == "__main__":
