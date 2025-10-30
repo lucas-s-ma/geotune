@@ -13,5 +13,4 @@ omegaconf>=2.2.0
 tqdm>=4.62.0
 typing-extensions>=4.0.0
 requests>=2.25.0
-torchdrug>=0.3.0
 fair-esm

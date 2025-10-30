@@ -1,0 +1,11 @@
+Generating GearNet embeddings from data/processed
+Output directory: data/processed/embeddings
+Generating GearNet embeddings from data/processed
+Loaded 11158 proteins from dataset
+Successfully created fallback GeometricRelationalGraphConv layer for hidden_dim=512
+Successfully created fallback GeometricRelationalGraphConv layer for hidden_dim=512
+Successfully created fallback GeometricRelationalGraphConv layer for hidden_dim=512
+Successfully created fallback GeometricRelationalGraphConv layer for hidden_dim=512
+TorchDrug GearNet import failed: module 'torchdrug.layers' has no attribute 'GlobalMeanPool'
+Using simplified implementation
+Successfully loaded GearNet implementation from TorchDrug
