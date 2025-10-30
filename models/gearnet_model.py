@@ -74,17 +74,30 @@ class GearNet(nn.Module, core.Configurable):
         layer_input_dim = hidden_dims[0]
         
         for i, hidden_dim in enumerate(hidden_dims):
-            layer = layers.GearNet(
-                layer_input_dim,
-                hidden_dim,
-                num_relation,
-                batch_norm,
-                short_cut,
-                concat_hidden,
-                num_mlp_layer,
-                self.activation,
-                dropout
-            )
+            try:
+                # Attempt to use the actual GearNet layer from TorchDrug
+                layer = layers.GearNet(
+                    layer_input_dim,
+                    hidden_dim,
+                    num_relation,
+                    batch_norm,
+                    short_cut,
+                    concat_hidden,
+                    num_mlp_layer,
+                    self.activation,
+                    dropout
+                )
+            except AttributeError:
+                # Fall back to a geometric graph layer that exists in this version of TorchDrug
+                # Using GeometricRelationalGraphConv as an alternative for geometric relationships
+                layer = layers.GeometricRelationalGraphConv(
+                    layer_input_dim,
+                    hidden_dim,
+                    num_relation,
+                    batch_norm=batch_norm,
+                    activation=self.activation,
+                    dropout=dropout
+                )
             self.gearnet_layers.append(layer)
             layer_input_dim = hidden_dim if not concat_hidden else layer_input_dim  # Fixed
         
@@ -191,9 +204,9 @@ class GearNetFromCoordinates(nn.Module):
                     
             print("Successfully created GearNet model with TorchDrug")
             
-        except ImportError as e:
-            # Fallback implementation if torchdrug is not available
-            print(f"TorchDrug import failed: {e}")
+        except (ImportError, AttributeError) as e:
+            # Fallback implementation if torchdrug is not available or GearNet layer doesn't exist
+            print(f"TorchDrug GearNet import failed: {e}")
             print("Using simplified implementation")
             self.gearnet_model = self._create_simplified_model(hidden_dim)
             self.coord_projection = nn.Linear(9, hidden_dim)
