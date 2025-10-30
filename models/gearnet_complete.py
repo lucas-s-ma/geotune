@@ -159,37 +159,18 @@ class GearNet(nn.Module, core.Configurable):
         layer_input_dim = hidden_dims[0]
         
         for i, hidden_dim in enumerate(hidden_dims):
-            try:
-                layer = layers.GearNet(
-                    layer_input_dim,
-                    hidden_dim,
-                    num_relation,
-                    batch_norm,
-                    short_cut,
-                    concat_hidden,
-                    num_mlp_layer,
-                    self.activation,
-                    dropout
-                )
-                print(f"Successfully created GearNet layer for hidden_dim={hidden_dim}")
-            except AttributeError:
-                # Fall back to a geometric graph layer that exists in this version of TorchDrug
-                try:
-                    # Using GeometricRelationalGraphConv as an alternative for geometric relationships
-                    # Note: GeometricRelationalGraphConv doesn't accept all the same parameters
-                    layer = layers.GeometricRelationalGraphConv(
-                        layer_input_dim,
-                        hidden_dim,
-                        num_relation
-                    )
-                    print(f"Successfully created fallback GeometricRelationalGraphConv layer for hidden_dim={hidden_dim}")
-                except Exception:
-                    # If even the fallback doesn't work, use a basic graph convolution
-                    layer = layers.GraphConv(
-                        layer_input_dim,
-                        hidden_dim
-                    )
-                    print(f"Using GraphConv fallback layer for hidden_dim={hidden_dim}")
+            # Use the actual GearNet layer from TorchDrug
+            layer = layers.GearNet(
+                layer_input_dim,
+                hidden_dim,
+                num_relation,
+                batch_norm,
+                short_cut,
+                concat_hidden,
+                num_mlp_layer,
+                self.activation,
+                dropout
+            )
             self.gearnet_layers.append(layer)
             layer_input_dim = hidden_dim
         
@@ -227,18 +208,11 @@ class GearNet(nn.Module, core.Configurable):
         layer_input = self.input_linear(input)
         
         for layer in self.gearnet_layers:
-            try:
-                hidden = layer(graph, layer_input)
-                if self.short_cut:
-                    hidden = hidden + layer_input  # Residual connection
-                hiddens.append(hidden)
-                layer_input = hidden
-            except Exception as e:
-                print(f"Error in layer processing: {e}")
-                # Fallback to just passing the input through
-                hidden = layer_input
-                hiddens.append(hidden)
-                break
+            hidden = layer(graph, layer_input)
+            if self.short_cut:
+                hidden = hidden + layer_input  # Residual connection
+            hiddens.append(hidden)
+            layer_input = hidden
         
         # Concatenate all hidden representations if concat_hidden is True
         if self.concat_hidden:
@@ -278,38 +252,25 @@ class GearNetFromCoordinates(nn.Module):
         self.hidden_dim = hidden_dim
         self.freeze = freeze
         
-        try:
-            # Create actual GearNet model from TorchDrug
-            self.gearnet_model = GearNet(
-                input_dim=hidden_dim,
-                hidden_dims=[512, 512, 512, 512],
-                num_relation=7,
-                batch_norm=True,
-                short_cut=True,
-                concat_hidden=False,
-                readout="mean"
-            )
-            
-            # Node feature embedding: 3D coordinates + context -> hidden_dim
-            self.node_embedding = nn.Linear(3, hidden_dim)  # 3D coordinate -> hidden
-            
-            if freeze:
-                for param in self.parameters():
-                    param.requires_grad = False
-                    
-            print("Successfully created GearNet model with TorchDrug")
-            
-        except Exception as e:
-            # Fallback implementation if torchdrug is not available
-            print(f"TorchDrug import failed: {e}")
-            print("Using simplified implementation")
-            self.gearnet_model = None
-            self.node_embedding = nn.Linear(9, hidden_dim)  # 9D concatenated coords -> hidden
-            self.fallback_model = SimplifiedGearNet(hidden_dim)
-            
-            if freeze:
-                for param in self.parameters():
-                    param.requires_grad = False
+        # Create actual GearNet model from TorchDrug
+        self.gearnet_model = GearNet(
+            input_dim=hidden_dim,
+            hidden_dims=[512, 512, 512, 512],
+            num_relation=7,
+            batch_norm=True,
+            short_cut=True,
+            concat_hidden=False,
+            readout="mean"
+        )
+        
+        # Node feature embedding: 3D coordinates + context -> hidden_dim
+        self.node_embedding = nn.Linear(3, hidden_dim)  # 3D coordinate -> hidden
+        
+        if freeze:
+            for param in self.parameters():
+                param.requires_grad = False
+                
+        print("Successfully created GearNet model with TorchDrug")
 
     def forward(self, n_coords, ca_coords, c_coords):
         """
@@ -325,11 +286,6 @@ class GearNetFromCoordinates(nn.Module):
         """
         batch_size, seq_len, _ = ca_coords.shape
         
-        # If torchdrug model is not available, use fallback
-        if self.gearnet_model is None:
-            coords = torch.cat([n_coords, ca_coords, c_coords], dim=-1)  # (B, L, 9)
-            return self.fallback_model(coords)
-        
         # For now: average the three coordinates for each residue to get a single coordinate
         # This is a simplification - in a full implementation, you'd create a full graph
         avg_coords = (n_coords + ca_coords + c_coords) / 3  # (B, L, 3)
@@ -338,72 +294,6 @@ class GearNetFromCoordinates(nn.Module):
         node_features = self.node_embedding(avg_coords)  # (B, L, hidden_dim)
         
         return node_features  # Return for now; a full implementation would use the graph model
-
-
-class SimplifiedGearNet(nn.Module):
-    """
-    Simplified GearNet implementation that works without torchdrug dependency
-    This approximates the geometric learning of the real GearNet model
-    """
-    
-    def __init__(self, hidden_dim=512):
-        super(SimplifiedGearNet, self).__init__()
-        
-        self.hidden_dim = hidden_dim
-        
-        # Process 3D coordinates (N, CA, C = 9 dimensions) to hidden representation
-        # This simulates the geometric feature extraction of GearNet
-        self.coord_processor = nn.Sequential(
-            nn.Linear(9, hidden_dim // 2),  # Process 3D coordinates (N, CA, C)
-            nn.ReLU(),
-            nn.Dropout(0.1),
-            nn.Linear(hidden_dim // 2, hidden_dim),
-            nn.ReLU(),
-            nn.Dropout(0.1)
-        )
-        
-        # Additional processing layers to capture geometric relationships
-        self.relational_processor = nn.Sequential(
-            nn.Linear(hidden_dim, hidden_dim),
-            nn.ReLU(),
-            nn.Dropout(0.1),
-            nn.Linear(hidden_dim, hidden_dim)
-        )
-        
-        # Final projection
-        self.projection = nn.Linear(hidden_dim, hidden_dim)
-    
-    def forward(self, coords):
-        """
-        Process concatenated coordinates
-        
-        Args:
-            coords: (batch_size, seq_len, 9) concatenated N, CA, C coordinates
-        
-        Returns:
-            embeddings: (batch_size, seq_len, hidden_dim) processed embeddings
-        """
-        batch_size, seq_len, _ = coords.shape
-        
-        # Process coordinates to initial embeddings
-        initial_embeddings = self.coord_processor(coords)  # (B, L, hidden_dim)
-        
-        # Process with relational layers (simulating message passing)
-        processed_embeddings = self.relational_processor(initial_embeddings)
-        
-        # Add residual connection
-        embeddings = initial_embeddings + processed_embeddings
-        
-        # Final projection
-        output_embeddings = self.projection(embeddings)
-        
-        return output_embeddings
-    
-    def forward_for_coords(self, coords):
-        """
-        Forward pass specifically for coordinate input
-        """
-        return self.forward(coords)
 
 
 def create_pretrained_gearnet(hidden_dim=512, pretrained_path=None, freeze=True):

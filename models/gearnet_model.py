@@ -74,38 +74,18 @@ class GearNet(nn.Module, core.Configurable):
         layer_input_dim = hidden_dims[0]
         
         for i, hidden_dim in enumerate(hidden_dims):
-            try:
-                # Attempt to use the actual GearNet layer from TorchDrug
-                layer = layers.GearNet(
-                    layer_input_dim,
-                    hidden_dim,
-                    num_relation,
-                    batch_norm,
-                    short_cut,
-                    concat_hidden,
-                    num_mlp_layer,
-                    self.activation,
-                    dropout
-                )
-                print(f"Successfully created GearNet layer for hidden_dim={hidden_dim}")
-            except AttributeError:
-                # Fall back to a geometric graph layer that exists in this version of TorchDrug
-                try:
-                    # Using GeometricRelationalGraphConv as an alternative for geometric relationships
-                    # Note: GeometricRelationalGraphConv doesn't accept all the same parameters
-                    layer = layers.GeometricRelationalGraphConv(
-                        layer_input_dim,
-                        hidden_dim,
-                        num_relation
-                    )
-                    print(f"Successfully created fallback GeometricRelationalGraphConv layer for hidden_dim={hidden_dim}")
-                except Exception:
-                    # If even the fallback doesn't work, use a basic graph convolution
-                    layer = layers.GraphConv(
-                        layer_input_dim,
-                        hidden_dim
-                    )
-                    print(f"Using GraphConv fallback layer for hidden_dim={hidden_dim}")
+            # Use the actual GearNet layer from TorchDrug
+            layer = layers.GearNet(
+                layer_input_dim,
+                hidden_dim,
+                num_relation,
+                batch_norm,
+                short_cut,
+                concat_hidden,
+                num_mlp_layer,
+                self.activation,
+                dropout
+            )
             self.gearnet_layers.append(layer)
             layer_input_dim = hidden_dim if not concat_hidden else layer_input_dim  # Fixed
         
@@ -143,21 +123,14 @@ class GearNet(nn.Module, core.Configurable):
         layer_input = self.input_linear(input)
         
         for layer in self.gearnet_layers:
-            try:
-                hidden = layer(graph, layer_input)
-                if self.short_cut and self.concat_hidden:
-                    hiddens.append(hidden)
-                elif self.short_cut:
-                    hiddens = [hidden]
-                else:
-                    hiddens = [hidden]
-                layer_input = hidden
-            except Exception as e:
-                print(f"Error in layer processing: {e}")
-                # Fallback to just passing the input through
-                hidden = layer_input
+            hidden = layer(graph, layer_input)
+            if self.short_cut and self.concat_hidden:
+                hiddens.append(hidden)
+            elif self.short_cut:
                 hiddens = [hidden]
-                break
+            else:
+                hiddens = [hidden]
+            layer_input = hidden
         
         # Concatenate all hidden representations if concat_hidden is True
         if self.concat_hidden and len(hiddens) > 1:
@@ -197,44 +170,26 @@ class GearNetFromCoordinates(nn.Module):
         self.hidden_dim = hidden_dim
         self.freeze = freeze
 
-        try:
-            # Create actual GearNet model from TorchDrug
-            self.gearnet_model = GearNet(
-                input_dim=hidden_dim,
-                hidden_dims=[512, 512, 512, 512],
-                num_relation=7,
-                batch_norm=True,
-                short_cut=True,
-                concat_hidden=False,
-                readout="mean"
-            )
-            
-            # Projection layer to convert from coordinate features to hidden dimension
-            # 9 coordinate dimensions (N, CA, C * 3D) -> hidden_dim
-            self.coord_projection = nn.Linear(9, hidden_dim)
-            
-            if freeze:
-                for param in self.parameters():
-                    param.requires_grad = False
-                    
-            print("Successfully created GearNet model with TorchDrug")
-            
-        except (ImportError, AttributeError) as e:
-            # Fallback implementation if torchdrug is not available or GearNet layer doesn't exist
-            print(f"TorchDrug GearNet import failed: {e}")
-            print("Using simplified implementation")
-            self.gearnet_model = self._create_simplified_model(hidden_dim)
-            self.coord_projection = nn.Linear(9, hidden_dim)
-            
-            if freeze:
-                for param in self.parameters():
-                    param.requires_grad = False
-
-    def _create_simplified_model(self, hidden_dim):
-        """
-        Create a simplified model to fall back to if torchdrug is not available
-        """
-        return SimplifiedGearNet(hidden_dim)
+        # Create actual GearNet model from TorchDrug
+        self.gearnet_model = GearNet(
+            input_dim=hidden_dim,
+            hidden_dims=[512, 512, 512, 512],
+            num_relation=7,
+            batch_norm=True,
+            short_cut=True,
+            concat_hidden=False,
+            readout="mean"
+        )
+        
+        # Projection layer to convert from coordinate features to hidden dimension
+        # 9 coordinate dimensions (N, CA, C * 3D) -> hidden_dim
+        self.coord_projection = nn.Linear(9, hidden_dim)
+        
+        if freeze:
+            for param in self.parameters():
+                param.requires_grad = False
+                
+        print("Successfully created GearNet model with TorchDrug")
     
     def forward(self, n_coords, ca_coords, c_coords):
         """
@@ -256,85 +211,10 @@ class GearNetFromCoordinates(nn.Module):
         # Project coordinates to hidden dimension
         node_features = self.coord_projection(coords)  # (B, L, hidden_dim)
 
-        # If we have the real gearnet_model from TorchDrug
-        if hasattr(self.gearnet_model, 'forward'):
-            try:
-                # Create a mock graph structure that TorchDrug expects
-                # For now, we'll just return the projected features
-                # In a complete implementation, we'd create an actual graph from coordinates
-                return node_features
-            except Exception as e:
-                print(f"Failed to run full GearNet model: {e}")
-                return node_features
-        else:
-            # Use the simplified model
-            return self.gearnet_model(coords)
-
-
-class SimplifiedGearNet(nn.Module):
-    """
-    Simplified GearNet implementation that works without torchdrug dependency
-    This approximates the geometric learning of the real GearNet model
-    """
-    
-    def __init__(self, hidden_dim=512):
-        super(SimplifiedGearNet, self).__init__()
-        
-        self.hidden_dim = hidden_dim
-        
-        # Process 3D coordinates (N, CA, C = 9 dimensions) to hidden representation
-        # This simulates the geometric feature extraction of GearNet
-        self.coord_processor = nn.Sequential(
-            nn.Linear(9, hidden_dim // 2),  # Process 3D coordinates (N, CA, C)
-            nn.ReLU(),
-            nn.Dropout(0.1),
-            nn.Linear(hidden_dim // 2, hidden_dim),
-            nn.ReLU(),
-            nn.Dropout(0.1)
-        )
-        
-        # Additional processing layers to capture geometric relationships
-        self.relational_processor = nn.Sequential(
-            nn.Linear(hidden_dim, hidden_dim),
-            nn.ReLU(),
-            nn.Dropout(0.1),
-            nn.Linear(hidden_dim, hidden_dim)
-        )
-        
-        # Final projection
-        self.projection = nn.Linear(hidden_dim, hidden_dim)
-    
-    def forward(self, coords):
-        """
-        Process concatenated coordinates
-        
-        Args:
-            coords: (batch_size, seq_len, 9) concatenated N, CA, C coordinates
-        
-        Returns:
-            embeddings: (batch_size, seq_len, hidden_dim) processed embeddings
-        """
-        batch_size, seq_len, _ = coords.shape
-        
-        # Process coordinates to initial embeddings
-        initial_embeddings = self.coord_processor(coords)  # (B, L, hidden_dim)
-        
-        # Process with relational layers (simulating message passing)
-        processed_embeddings = self.relational_processor(initial_embeddings)
-        
-        # Add residual connection
-        embeddings = initial_embeddings + processed_embeddings
-        
-        # Final projection
-        output_embeddings = self.projection(embeddings)
-        
-        return output_embeddings
-    
-    def forward_for_coords(self, coords):
-        """
-        Forward pass specifically for coordinate input
-        """
-        return self.forward(coords)
+        # Create a mock graph structure that TorchDrug expects
+        # For now, we'll just return the projected features
+        # In a complete implementation, we'd create an actual graph from coordinates
+        return node_features
 
 
 def create_pretrained_gearnet(hidden_dim=512, pretrained_path=None, freeze=True):
