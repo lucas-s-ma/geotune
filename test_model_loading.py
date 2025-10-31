@@ -3,7 +3,7 @@
 Test script to verify ESM2 model loading and LoRA integration
 """
 import torch
-from models.esm_model import load_esm_with_lora, ESMWithConstraints, create_lora_config
+from models.geotune_esm_model import load_esm_with_lora, ESMWithConstraints, create_lora_config
 
 def test_base_model_loading():
     """Test if we can load the base ESM2 model correctly"""

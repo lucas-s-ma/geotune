@@ -3,7 +3,7 @@
 Debug script to check which parameters are trainable in the ESM model with LoRA
 """
 import torch
-from models.esm_model import load_esm_with_lora
+from models.geotune_esm_model import load_esm_with_lora
 
 def analyze_trainable_params():
     """Analyze which parameters are trainable"""

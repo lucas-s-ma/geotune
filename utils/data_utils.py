@@ -226,6 +226,11 @@ def collate_fn(batch):
         'protein_ids': [item['protein_id'] for item in batch]
     }
     
+    # Add pre-computed embeddings if they exist in the batch
+    if 'precomputed_embeddings' in batch[0]:
+        precomputed_embeddings = torch.stack([item['precomputed_embeddings'] for item in batch])
+        result['precomputed_embeddings'] = precomputed_embeddings
+    
     # Add structural tokens if they exist in the batch
     if 'structural_tokens' in batch[0]:
         structural_tokens = torch.stack([item['structural_tokens'] for item in batch])
@@ -313,15 +318,17 @@ class EfficientProteinDataset(Dataset):
     Efficient dataset that loads pre-processed protein data from a single file
     This avoids re-parsing PDB files every time, significantly improving performance
     """
-    def __init__(self, processed_data_path, max_seq_len=1024, include_structural_tokens=False):
+    def __init__(self, processed_data_path, max_seq_len=1024, include_structural_tokens=False, load_embeddings=False):
         """
         Args:
             processed_data_path: Path to directory containing pre-processed dataset.pkl
             max_seq_len: Maximum sequence length
             include_structural_tokens: Whether to include precomputed structural tokens (Foldseek)
+            load_embeddings: Whether to load pre-computed embeddings from data/processed/embeddings
         """
         self.max_seq_len = max_seq_len
         self.include_structural_tokens = include_structural_tokens
+        self.load_embeddings = load_embeddings
         
         # Load the pre-processed dataset
         dataset_file = os.path.join(processed_data_path, "processed_dataset.pkl")
@@ -348,6 +355,17 @@ class EfficientProteinDataset(Dataset):
             raise FileNotFoundError(f"Processed dataset not found at {dataset_file}. "
                                   f"Run process_data.py to create the processed dataset first.")
         
+        # Load pre-computed embeddings if requested
+        if load_embeddings:
+            embeddings_dir = os.path.join(processed_data_path, "embeddings")
+            if os.path.exists(embeddings_dir):
+                self.embeddings_dict = self._load_embeddings_from_directory(embeddings_dir)
+                print(f"Loaded embeddings for {len(self.embeddings_dict)} proteins from {embeddings_dir}")
+            else:
+                print(f"Warning: Embeddings directory not found at {embeddings_dir}. "
+                      f"Continuing without pre-computed embeddings.")
+                self.embeddings_dict = {}
+        
         # Load the ID mapping if it exists
         if os.path.exists(mapping_file):
             with open(mapping_file, 'r') as f:
@@ -357,6 +375,30 @@ class EfficientProteinDataset(Dataset):
         else:
             # Create ID mapping if not found
             self.id_mapping = {i: protein['id'] for i, protein in enumerate(self.proteins)}
+    
+    def _load_embeddings_from_directory(self, embeddings_dir):
+        """
+        Load embeddings from the embeddings directory
+        Each protein should have an embedding file named {protein_id}_gearnet_embeddings.pkl
+        """
+        embeddings_dict = {}
+        
+        # Look for embedding files in the directory
+        for filename in os.listdir(embeddings_dir):
+            if filename.endswith('_gearnet_embeddings.pkl'):
+                protein_id = filename.replace('_gearnet_embeddings.pkl', '')
+                
+                # Load the embedding file
+                embedding_path = os.path.join(embeddings_dir, filename)
+                try:
+                    with open(embedding_path, 'rb') as f:
+                        embedding_data = pickle.load(f)
+                        # Store only the embeddings array
+                        embeddings_dict[protein_id] = embedding_data['embeddings']
+                except Exception as e:
+                    print(f"Error loading embedding file {embedding_path}: {e}")
+        
+        return embeddings_dict
     
     def __len__(self):
         return len(self.proteins)
@@ -400,6 +442,19 @@ class EfficientProteinDataset(Dataset):
             'seq_len': len(protein['sequence']),
             'protein_id': protein['id']
         }
+        
+        # Add pre-computed embeddings if available
+        if self.load_embeddings and protein['id'] in self.embeddings_dict:
+            embeddings = self.embeddings_dict[protein['id']]
+            # Truncate if necessary
+            if len(embeddings) > self.max_seq_len:
+                embeddings = embeddings[:self.max_seq_len]
+            # Pad or truncate to max length
+            if len(embeddings) < self.max_seq_len:
+                padding_length = self.max_seq_len - len(embeddings)
+                padding_embeddings = np.zeros((padding_length, embeddings.shape[-1]))
+                embeddings = np.vstack([embeddings, padding_embeddings])
+            result['precomputed_embeddings'] = torch.tensor(embeddings, dtype=torch.float32)
         
         # Add structural tokens if available
         if self.include_structural_tokens and len(self.structural_tokens) > idx:

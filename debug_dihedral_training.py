@@ -5,7 +5,7 @@ Debug script to test the new dihedral angle constraint implementation in trainin
 import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader
-from models.esm_model import load_esm_with_lora
+from models.geotune_esm_model import load_esm_with_lora
 from utils.data_utils import collate_fn
 from utils.dihedral_utils import DihedralAngleConstraint
 import os

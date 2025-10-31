@@ -16,7 +16,7 @@ import numpy as np
 from tqdm import tqdm
 import argparse
 
-from models.esm_model import load_esm_with_lora
+from models.geotune_esm_model import load_esm_with_lora
 from utils.data_utils import ProteinStructureDataset, collate_fn
 from utils.geom_utils import GeometricConstraints
 
