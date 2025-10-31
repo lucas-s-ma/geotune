@@ -116,7 +116,7 @@ def train_epoch(model, dataloader, optimizer, scheduler, dihedral_constraints, d
         use_amp = scaler is not None
 
         # Forward pass with automatic mixed precision
-        with torch.cuda.amp.autocast(enabled=use_amp):
+        with torch.amp.autocast('cuda', enabled=use_amp):
             outputs = model(
                 input_ids=input_ids,
                 attention_mask=attention_mask
@@ -155,7 +155,7 @@ def train_epoch(model, dataloader, optimizer, scheduler, dihedral_constraints, d
         # Add timing for constraint calculation to identify bottlenecks
         constraint_start_time = time.time()
 
-        with torch.cuda.amp.autocast(enabled=use_amp):
+        with torch.amp.autocast('cuda', enabled=use_amp):
             dihedral_losses = dihedral_constraints(
                 masked_outputs['sequence_output'],
                 n_coords,
