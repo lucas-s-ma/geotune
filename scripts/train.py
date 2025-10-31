@@ -10,6 +10,9 @@ project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root))
 
 import torch
+import transformers
+print(f"PyTorch version: {torch.__version__}")
+print(f"Transformers version: {transformers.__version__}")
 import torch.nn as nn
 from torch.utils.data import DataLoader
 from transformers import get_linear_schedule_with_warmup

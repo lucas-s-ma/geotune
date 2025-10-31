@@ -22,86 +22,58 @@ class ESMWithConstraints(nn.Module):
         constraint_weight=0.1
     ):
         super().__init__()
-        
+
         self.config = config
-        self.model = base_model
-        
+
+        # Apply LoRA FIRST, then add our custom layers
+        if lora_config is not None:
+            self.model = get_peft_model(base_model, lora_config)
+            logger.info(f"Applied LoRA with config: {lora_config}")
+        else:
+            self.model = base_model
+
         # Add language modeling head for MLM task
         hidden_size = self.config.hidden_size
         self.lm_head = nn.Linear(hidden_size, self.config.vocab_size, bias=False)
-        
-        # Initialize LM head weights from word embeddings BEFORE applying LoRA
+
+        # Initialize LM head weights from word embeddings
+        # Access base model through self.model (or self.model.base_model for PEFT)
+        actual_base = self.model.base_model if hasattr(self.model, 'base_model') else self.model
+
         try:
             # Access the embeddings properly for ESM2 model
-            if hasattr(self.model, 'embeddings') and hasattr(self.model.embeddings, 'word_embeddings'):
-                self.lm_head.weight = self.model.embeddings.word_embeddings.weight
-            elif hasattr(self.model, 'encoder') and hasattr(self.model.encoder, 'embed_tokens'):
+            if hasattr(actual_base, 'embeddings') and hasattr(actual_base.embeddings, 'word_embeddings'):
+                self.lm_head.weight = actual_base.embeddings.word_embeddings.weight
+            elif hasattr(actual_base, 'encoder') and hasattr(actual_base.encoder, 'embed_tokens'):
                 # For some transformer variants
-                self.lm_head.weight = self.model.encoder.embed_tokens.weight
-            elif hasattr(self.model, 'shared'):
+                self.lm_head.weight = actual_base.encoder.embed_tokens.weight
+            elif hasattr(actual_base, 'shared'):
                 # For models with shared embeddings
-                self.lm_head.weight = self.model.shared.weight
+                self.lm_head.weight = actual_base.shared.weight
             else:
-                # Try to find embeddings using different approach
-                embedding_weights = None
-                if hasattr(self.model, 'embeddings'):
-                    if hasattr(self.model.embeddings, 'word_embeddings'):
-                        embedding_weights = self.model.embeddings.word_embeddings.weight
-                    elif hasattr(self.model.embeddings, 'tokens'):
-                        embedding_weights = self.model.embeddings.tokens.weight
-                    elif hasattr(self.model.embeddings, 'token_embeddings'):
-                        embedding_weights = self.model.embeddings.token_embeddings.weight
-                    elif hasattr(self.model.embeddings, 'decoder'):
-                        embedding_weights = self.model.embeddings.decoder.weight
-                    elif hasattr(self.model, 'word_embeddings'):
-                        embedding_weights = self.model.word_embeddings.weight
-                    elif hasattr(self.model, 'shared'):
-                        embedding_weights = self.model.shared.weight
-                    elif hasattr(self.model, 'wte'):  # GPT-style embedding
-                        embedding_weights = self.model.wte.weight
-                    else:
-                        # Find any parameter that has the right shape for embeddings
-                        vocab_size, hidden_size = self.lm_head.weight.shape
-                        for name, param in self.model.named_parameters():
-                            if param.shape == (vocab_size, hidden_size) and 'embed' in name:
-                                embedding_weights = param
-                                break
-                
-                if embedding_weights is not None:
-                    self.lm_head.weight = embedding_weights
-                else:
-                    logger.warning("Could not find appropriate embeddings to tie with LM head, using random initialization.")
+                logger.warning("Could not find appropriate embeddings to tie with LM head, using random initialization.")
         except AttributeError as e:
             logger.warning(f"Could not tie LM head weights: {e}. Using random initialization.")
-            logger.warning("Embedding structure may differ from expected - checking available attributes:")
-            for attr_name in dir(self.model):
-                if 'embed' in attr_name.lower():
-                    logger.warning(f"  Found embedding-related attribute: {attr_name}")
-        
-        # Apply LoRA if configuration is provided
-        if lora_config is not None:
-            self.model = get_peft_model(self.model, lora_config)
-            logger.info(f"Applied LoRA with config: {lora_config}")
-        
+
         # Add constraint-specific layers
         self.constraint_proj = nn.Linear(hidden_size, hidden_size // 2)
         self.constraint_activation = nn.Tanh()
-        
+
         # Constraint weight for loss combination
         self.constraint_weight = constraint_weight
-        
+
         # Freeze all base model parameters when LoRA is applied
         # Only LoRA parameters and lm_head should be trainable
         if lora_config is not None:
             for param in self.model.parameters():
                 param.requires_grad = False
-            
+
             # Enable gradients only for LoRA parameters
             for name, param in self.model.named_parameters():
                 if "lora" in name.lower():
                     param.requires_grad = True
                     logger.info(f"Enabled gradients for LoRA parameter: {name}")
-        
+
         # The LM head should be trainable for the MLM task
         for param in self.lm_head.parameters():
             param.requires_grad = True
@@ -179,8 +151,9 @@ def create_lora_config(
             "intermediate.dense", "output.dense"
         ]
     
+    # For ESM models, use TOKEN_CLS which is more appropriate for encoder models
     config = LoraConfig(
-        task_type=TaskType.FEATURE_EXTRACTION,
+        task_type=TaskType.TOKEN_CLS,
         r=r,
         lora_alpha=lora_alpha,
         target_modules=target_modules,
@@ -197,18 +170,20 @@ def load_esm_with_lora(model_name="facebook/esm2_t30_150M_UR50D", lora_params=No
     """
     if lora_params is None:
         lora_params = {}
-        
+
     lora_config = create_lora_config(**lora_params)
-    
-    # 1. Load config and base model outside the custom class
+
+    # Load config and base model outside the custom class
     config = EsmConfig.from_pretrained(model_name)
+
+    # Load base model without applying LoRA first
     base_model = EsmModel.from_pretrained(
         model_name,
         config=config,
         torch_dtype=torch.float32
     )
     
-    # 2. Pass the pre-loaded model into the custom class
+    # After base model is loaded, then apply the wrapper with LoRA
     model = ESMWithConstraints(
         base_model=base_model,
         config=config,
