@@ -207,7 +207,7 @@ class PretrainedGNNWrapper(nn.Module):
     
     def _create_stub_gearnet(self, hidden_dim, freeze):
         """Create a stub GearNet implementation if the real one is not available"""
-        return StubGearNetWrapper(hidden_dim, freeze)
+        return StubGearNetWrapper(hidden_dim=hidden_dim, freeze=freeze)
     
     def forward(self, n_coords, ca_coords, c_coords):
         """
@@ -232,28 +232,30 @@ class StubGearNetWrapper(nn.Module):
         """
         Initialize GearNet wrapper - this is a simplified placeholder
         In practice, you would load an actual pre-trained GearNet model
-        
+
         Args:
-            hidden_dim: Hidden dimension for the GNN
+            hidden_dim: Hidden dimension for the GNN (should match ESM hidden dim)
             num_layers: Number of GNN layers
             freeze: Whether to freeze the model parameters during training
         """
         super().__init__()
-        
+
+        self.hidden_dim = hidden_dim
+
         # Placeholder: This would be replaced with an actual GearNet implementation
         # For now, we'll create a simplified structure encoder
         # Input: 3D coords (9 dimensions: N, CA, C = 3*3) + hidden_dim for features
         initial_input_dim = 9  # 3 coords each for N, CA, C atoms
         self.graph_conv_layers = nn.ModuleList()
-        
+
         # Create layers with compatible dimensions
         for i in range(num_layers):
             input_dim = initial_input_dim if i == 0 else hidden_dim
             self.graph_conv_layers.append(nn.Linear(input_dim, hidden_dim))
-        
-        # Linear layer to project to same dimension as ESM if needed
-        self.projection = nn.Linear(hidden_dim, 768)  # Project to ESM dimension
-        
+
+        # No additional projection needed - output hidden_dim directly to match ESM
+        # The structure_alignment_loss will handle any necessary projections
+
         if freeze:
             for param in self.parameters():
                 param.requires_grad = False
@@ -274,17 +276,16 @@ class StubGearNetWrapper(nn.Module):
         # Create initial node features from coordinates (simplified approach)
         # In a real GNN, this would include edge features and message passing
         batch_size, seq_len, _ = ca_coords.shape
-        
+
         # Concatenate backbone coordinates as initial features
         initial_features = torch.cat([n_coords, ca_coords, c_coords], dim=-1)  # (B, L, 9)
-        
+
         # Process through graph convolution layers (simplified)
         x = initial_features
         for i, layer in enumerate(self.graph_conv_layers):
             # Simplified message passing - in reality this would involve neighbor aggregation
             x = torch.relu(layer(x))
-        
-        # Project to the same dimension as the protein language model
-        embeddings = self.projection(x)
-        
-        return embeddings
+
+        # Return embeddings with shape (batch_size, seq_len, hidden_dim)
+        # This should match the ESM model's hidden dimension
+        return x
