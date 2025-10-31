@@ -540,11 +540,21 @@ def main():
     
     # Check if embeddings directory exists
     embeddings_path = os.path.join(config.data.data_path, "embeddings")
-    load_embeddings = os.path.exists(embeddings_path)
-    print(f"Pre-computed embeddings available: {load_embeddings}")
-    
+    embeddings_exist = os.path.exists(embeddings_path)
+
+    # IMPORTANT: Disable loading pre-computed embeddings if they have wrong dimension
+    # Pre-computed embeddings must match ESM model's hidden_dim
+    # ESM2-150M uses 640, ESM2-35M uses 480, etc.
+    # If embeddings were pre-computed with different hidden_dim, regenerate them or disable
+    load_embeddings = False  # Generate on-the-fly with correct dimension
+    if embeddings_exist:
+        print(f"Pre-computed embeddings found but disabled (may have wrong dimension)")
+        print(f"Embeddings will be generated on-the-fly with hidden_dim={esm_hidden_size}")
+    else:
+        print(f"Pre-computed embeddings not available, will generate on-the-fly")
+
     full_dataset = EfficientProteinDataset(
-        config.data.data_path, 
+        config.data.data_path,
         max_seq_len=config.training.max_seq_len,
         include_structural_tokens=include_structural_tokens,
         load_embeddings=load_embeddings
@@ -606,7 +616,7 @@ def main():
     scaler = None
     if hasattr(config.training, 'mixed_precision') and config.training.mixed_precision:
         if torch.cuda.is_available():
-            scaler = torch.cuda.amp.GradScaler()
+            scaler = torch.amp.GradScaler('cuda')
             print("Mixed precision training enabled")
         else:
             print("Mixed precision requested but CUDA not available, using float32")
