@@ -177,33 +177,29 @@ class PretrainedGNNWrapper(nn.Module):
             model_path: Path to pre-trained model (not currently available for GearNet)
             hidden_dim: Hidden dimension for the model
             freeze: Whether to freeze the model parameters
-            use_gearnet_stub: Whether to use the stub implementation when real model isn't available
+            use_gearnet_stub: Whether to use the stub implementation (avoids TorchDrug import)
         """
         super().__init__()
-        
-        # Try to import and use the real GearNet implementation
-        try:
-            from models.gearnet_model import create_pretrained_gearnet
-            self.backbone = create_pretrained_gearnet(
-                hidden_dim=hidden_dim,
-                pretrained_path=model_path,
-                freeze=freeze
-            )
-            print("Successfully loaded GearNet implementation from TorchDrug")
-        except (ImportError, AttributeError) as e:
-            print(f"Could not load TorchDrug GearNet implementation: {e}")
-            print("Using fallback implementation")
-            
-            if use_gearnet_stub:
-                # Use our simplified GearNet implementation
+
+        # Check if we should use the stub FIRST (before trying to import TorchDrug)
+        if use_gearnet_stub:
+            # Use our simplified GearNet implementation - no TorchDrug import needed
+            self.backbone = self._create_stub_gearnet(hidden_dim, freeze)
+            print("Using stub implementation for pre-trained GNN (avoiding TorchDrug)")
+        else:
+            # Try to import and use the real GearNet implementation
+            try:
+                from models.gearnet_model import create_pretrained_gearnet
+                self.backbone = create_pretrained_gearnet(
+                    hidden_dim=hidden_dim,
+                    pretrained_path=model_path,
+                    freeze=freeze
+                )
+                print("Successfully loaded GearNet implementation from TorchDrug")
+            except (ImportError, AttributeError) as e:
+                print(f"Could not load TorchDrug GearNet implementation: {e}")
+                print("Falling back to stub implementation")
                 self.backbone = self._create_stub_gearnet(hidden_dim, freeze)
-            elif model_path:
-                # In the future, this could load a real pre-trained model
-                self.backbone = self._create_stub_gearnet(hidden_dim, freeze)
-                print(f"Warning: Real model at {model_path} not available, using stub implementation")
-            else:
-                self.backbone = self._create_stub_gearnet(hidden_dim, freeze)
-                print("Using stub implementation for pre-trained GNN")
     
     def _create_stub_gearnet(self, hidden_dim, freeze):
         """Create a stub GearNet implementation if the real one is not available"""
