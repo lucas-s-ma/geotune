@@ -146,22 +146,31 @@ class StructureAlignmentLoss(nn.Module):
         Calculate the physical-level loss for structural token prediction
         """
         batch_size, seq_len, hidden_dim = pLM_embeddings.shape
-        
+
         # Predict structural tokens
         logits = self.structural_prediction_head(pLM_embeddings)  # (batch_size, seq_len, num_classes)
-        
+
         # Flatten for loss calculation
         logits_flat = logits.view(-1, self.num_structural_classes)  # (batch_size * seq_len, num_classes)
         tokens_flat = structure_tokens.view(-1)  # (batch_size * seq_len,)
-        
+
+        # CRITICAL: Validate and clamp structural tokens to valid range [0, num_classes-1]
+        # This handles tokens generated with old buggy code that mapped unknown chars to 20
+        invalid_mask = (tokens_flat >= self.num_structural_classes) | (tokens_flat < 0)
+        if invalid_mask.any():
+            num_invalid = invalid_mask.sum().item()
+            print(f"Warning: Found {num_invalid} invalid structural tokens (>= {self.num_structural_classes} or < 0). Clamping to valid range.")
+            # Clamp invalid tokens to 0 (default structural state)
+            tokens_flat = torch.clamp(tokens_flat, min=0, max=self.num_structural_classes - 1)
+
         # Apply attention mask by setting ignored positions to ignore_index
         if attention_mask is not None:
             mask_flat = attention_mask.view(-1)  # (batch_size * seq_len,)
             tokens_flat = torch.where(mask_flat.bool(), tokens_flat, torch.tensor(-100, device=tokens_flat.device))
-        
+
         # Calculate cross-entropy loss
         physical_loss = self.ce_loss(logits_flat, tokens_flat)
-        
+
         return physical_loss
 
 
