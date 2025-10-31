@@ -95,13 +95,24 @@ def generate_foldseek_tokens(pdb_file_path: str) -> Optional[List[int]]:
 def convert_3di_to_ints(ascii_seq: str) -> List[int]:
     """
     Convert 3Di ASCII sequence to integer tokens.
+
+    Foldseek 3Di alphabet uses 20 structural states (A-Y, excluding some letters).
+    Unknown characters are mapped to 0 (default structural state).
     """
     struct_to_int = {
-        'A': 0, 'C': 1, 'D': 2, 'E': 3, 'F': 4, 'G': 5, 'H': 6, 'I': 7, 
-        'K': 8, 'L': 9, 'M': 10, 'N': 11, 'P': 12, 'Q': 13, 'R': 14, 
+        'A': 0, 'C': 1, 'D': 2, 'E': 3, 'F': 4, 'G': 5, 'H': 6, 'I': 7,
+        'K': 8, 'L': 9, 'M': 10, 'N': 11, 'P': 12, 'Q': 13, 'R': 14,
         'S': 15, 'T': 16, 'V': 17, 'W': 18, 'Y': 19
     }
-    return [struct_to_int.get(char, 20) for char in ascii_seq]
+    # Map unknown characters to 0 instead of 20 to avoid out-of-bounds errors
+    # (CrossEntropyLoss expects tokens in range [0, num_classes-1])
+    tokens = []
+    for char in ascii_seq:
+        token = struct_to_int.get(char.upper(), 0)  # Use uppercase and default to 0
+        if char not in struct_to_int:
+            print(f"Warning: Unknown 3Di character '{char}' mapped to token 0")
+        tokens.append(token)
+    return tokens
 
 def main():
     parser = argparse.ArgumentParser(
