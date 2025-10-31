@@ -174,21 +174,27 @@ class ProteinStructureDataset(Dataset):
         }
         
         # Add structural tokens if available
-        if self.include_structural_tokens and len(self.structural_tokens) > idx:
-            struct_tokens = self.structural_tokens[idx]
-            struct_seq = struct_tokens['structural_tokens']  # Assuming it's in the same format
-            
-            # Truncate structural tokens to match sequence length
-            if len(struct_seq) > self.max_seq_len:
-                struct_seq = struct_seq[:self.max_seq_len]
-            
-            # Pad or truncate structural tokens to max length
-            if len(struct_seq) < self.max_seq_len:
-                padding_length = self.max_seq_len - len(struct_seq)
-                struct_seq.extend([-100] * padding_length)  # Use -100 as ignore index for padding
-            
-            result['structural_tokens'] = torch.tensor(struct_seq, dtype=torch.long)
-        
+        # Use try-except to handle missing structural tokens gracefully
+        if self.include_structural_tokens:
+            try:
+                if idx < len(self.structural_tokens):
+                    struct_tokens = self.structural_tokens[idx]
+                    struct_seq = struct_tokens['structural_tokens']  # Assuming it's in the same format
+
+                    # Truncate structural tokens to match sequence length
+                    if len(struct_seq) > self.max_seq_len:
+                        struct_seq = struct_seq[:self.max_seq_len]
+
+                    # Pad or truncate structural tokens to max length
+                    if len(struct_seq) < self.max_seq_len:
+                        padding_length = self.max_seq_len - len(struct_seq)
+                        struct_seq.extend([-100] * padding_length)  # Use -100 as ignore index for padding
+
+                    result['structural_tokens'] = torch.tensor(struct_seq, dtype=torch.long)
+            except (IndexError, KeyError, TypeError) as e:
+                # Skip structural tokens for this sample if there's any issue
+                pass
+
         return result
     
     def sequence_to_tokens(self, sequence):
@@ -226,16 +232,16 @@ def collate_fn(batch):
         'protein_ids': [item['protein_id'] for item in batch]
     }
     
-    # Add pre-computed embeddings if they exist in the batch
-    if 'precomputed_embeddings' in batch[0]:
+    # Add pre-computed embeddings if they exist in ALL items of the batch
+    if all('precomputed_embeddings' in item for item in batch):
         precomputed_embeddings = torch.stack([item['precomputed_embeddings'] for item in batch])
         result['precomputed_embeddings'] = precomputed_embeddings
-    
-    # Add structural tokens if they exist in the batch
-    if 'structural_tokens' in batch[0]:
+
+    # Add structural tokens if they exist in ALL items of the batch
+    if all('structural_tokens' in item for item in batch):
         structural_tokens = torch.stack([item['structural_tokens'] for item in batch])
         result['structural_tokens'] = structural_tokens
-    
+
     return result
 
 
@@ -457,21 +463,27 @@ class EfficientProteinDataset(Dataset):
             result['precomputed_embeddings'] = torch.tensor(embeddings, dtype=torch.float32)
         
         # Add structural tokens if available
-        if self.include_structural_tokens and len(self.structural_tokens) > idx:
-            struct_tokens = self.structural_tokens[idx]
-            struct_seq = struct_tokens['structural_tokens']  # Assuming it's in the same format
-            
-            # Truncate structural tokens to match sequence length
-            if len(struct_seq) > self.max_seq_len:
-                struct_seq = struct_seq[:self.max_seq_len]
-            
-            # Pad or truncate structural tokens to max length
-            if len(struct_seq) < self.max_seq_len:
-                padding_length = self.max_seq_len - len(struct_seq)
-                struct_seq.extend([-100] * padding_length)  # Use -100 as ignore index for padding
-            
-            result['structural_tokens'] = torch.tensor(struct_seq, dtype=torch.long)
-        
+        # Use try-except to handle missing structural tokens gracefully
+        if self.include_structural_tokens:
+            try:
+                if idx < len(self.structural_tokens):
+                    struct_tokens = self.structural_tokens[idx]
+                    struct_seq = struct_tokens['structural_tokens']  # Assuming it's in the same format
+
+                    # Truncate structural tokens to match sequence length
+                    if len(struct_seq) > self.max_seq_len:
+                        struct_seq = struct_seq[:self.max_seq_len]
+
+                    # Pad or truncate structural tokens to max length
+                    if len(struct_seq) < self.max_seq_len:
+                        padding_length = self.max_seq_len - len(struct_seq)
+                        struct_seq.extend([-100] * padding_length)  # Use -100 as ignore index for padding
+
+                    result['structural_tokens'] = torch.tensor(struct_seq, dtype=torch.long)
+            except (IndexError, KeyError, TypeError) as e:
+                # Skip structural tokens for this sample if there's any issue
+                pass
+
         return result
     
     def sequence_to_tokens(self, sequence):
