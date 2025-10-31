@@ -31,7 +31,7 @@ def test_single_batch():
         config = yaml.safe_load(f)
 
     # Load dataset
-    data_path = config['data']['processed_data_path']
+    data_path = config['data']['data_path']  # Fixed: use 'data_path' not 'processed_data_path'
     print(f"\nLoading dataset from: {data_path}")
 
     dataset = EfficientProteinDataset(
