@@ -22,11 +22,18 @@ def debug_dataset_runtime(data_path):
     print(f"\nLoading dataset from: {data_path}\n")
 
     # Create dataset instance (this is what training does)
+    # Note: data_path should be the DIRECTORY, not the .pkl file
+    # EfficientProteinDataset will look for processed_dataset.pkl inside this directory
+    import os
+    if data_path.endswith('.pkl'):
+        # If user provided the .pkl file path, extract the directory
+        data_path = os.path.dirname(data_path)
+
     dataset = EfficientProteinDataset(
-        processed_dataset_path=data_path,
+        processed_data_path=data_path,  # Directory path, not file path
         max_seq_len=512,
         include_structural_tokens=False,  # Don't need structural tokens for this test
-        structural_tokens_path=None
+        load_embeddings=False
     )
 
     print(f"Dataset size: {len(dataset)} proteins\n")

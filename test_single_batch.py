@@ -35,9 +35,10 @@ def test_single_batch():
     print(f"\nLoading dataset from: {data_path}")
 
     dataset = EfficientProteinDataset(
-        processed_dataset_path=os.path.join(data_path, "processed_dataset.pkl"),
+        processed_data_path=data_path,  # Directory path, class will find processed_dataset.pkl
         max_seq_len=config['training']['max_seq_len'],
-        include_structural_tokens=False
+        include_structural_tokens=False,
+        load_embeddings=False
     )
 
     print(f"Dataset size: {len(dataset)}")
