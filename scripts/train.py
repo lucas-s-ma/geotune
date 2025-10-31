@@ -18,7 +18,7 @@ import wandb
 import argparse
 from omegaconf import OmegaConf
 
-from models.esm_model import load_esm_with_lora
+from models.geotune_esm_model import load_esm_with_lora
 from utils.dihedral_utils import DihedralAngleConstraint
 from utils.data_utils import ProteinStructureDataset, EfficientProteinDataset, collate_fn
 from utils.structure_alignment_utils import StructureAlignmentLoss, PretrainedGNNWrapper
@@ -80,6 +80,9 @@ def train_epoch(model, dataloader, optimizer, scheduler, dihedral_constraints, d
         # Check if structural tokens are available in the batch
         has_structural_tokens = 'structural_tokens' in batch
         
+        # Check if pre-computed embeddings are available
+        has_precomputed_embeddings = 'precomputed_embeddings' in batch
+        
         # Log tensor shapes for debugging
         if batch_idx == 0:
             actual_seq_lengths = torch.sum(attention_mask, dim=1)
@@ -89,8 +92,11 @@ def train_epoch(model, dataloader, optimizer, scheduler, dihedral_constraints, d
             print(f"CA coordinates shape: {ca_coords.shape}")
             print(f"C coordinates shape: {c_coords.shape}")
             print(f"Structural tokens available: {has_structural_tokens}")
+            print(f"Pre-computed embeddings available: {has_precomputed_embeddings}")
             if has_structural_tokens:
                 print(f"Structural tokens shape: {batch['structural_tokens'].shape}")
+            if has_precomputed_embeddings:
+                print(f"Pre-computed embeddings shape: {batch['precomputed_embeddings'].shape}")
             print(f"Actual sequence lengths in batch: {actual_seq_lengths.tolist()}")
             print(f"Max sequence length in batch: {actual_seq_lengths.max().item()}")
             
@@ -154,9 +160,14 @@ def train_epoch(model, dataloader, optimizer, scheduler, dihedral_constraints, d
             # Get structural tokens
             structure_tokens = batch['structural_tokens'].to(device)
             
-            # Generate pGNN embeddings using the frozen GNN (inference only)
-            with torch.no_grad():
-                pGNN_embeddings = frozen_gnn(n_coords, ca_coords, c_coords)
+            # Use pre-computed embeddings if available, otherwise generate using frozen GNN
+            if has_precomputed_embeddings:
+                # Use pre-computed embeddings
+                pGNN_embeddings = batch['precomputed_embeddings'].to(device)
+            else:
+                # Generate pGNN embeddings using the frozen GNN (inference only)
+                with torch.no_grad():
+                    pGNN_embeddings = frozen_gnn(n_coords, ca_coords, c_coords)
             
             # Get pLM embeddings
             pLM_embeddings = masked_outputs['sequence_output']
@@ -270,6 +281,9 @@ def validate(model, dataloader, dihedral_constraints, device, config, structure_
             # Check if structural tokens are available in the batch
             has_structural_tokens = 'structural_tokens' in batch
             
+            # Check if pre-computed embeddings are available
+            has_precomputed_embeddings = 'precomputed_embeddings' in batch
+            
             # Forward pass
             outputs = model(
                 input_ids=input_ids,
@@ -314,8 +328,14 @@ def validate(model, dataloader, dihedral_constraints, device, config, structure_
                 # Get structural tokens
                 structure_tokens = batch['structural_tokens'].to(device)
                 
-                # Generate pGNN embeddings using the frozen GNN (inference only)
-                pGNN_embeddings = frozen_gnn(n_coords, ca_coords, c_coords)
+                # Use pre-computed embeddings if available, otherwise generate using frozen GNN
+                if has_precomputed_embeddings:
+                    # Use pre-computed embeddings
+                    pGNN_embeddings = batch['precomputed_embeddings'].to(device)
+                else:
+                    # Generate pGNN embeddings using the frozen GNN (inference only)
+                    with torch.no_grad():
+                        pGNN_embeddings = frozen_gnn(n_coords, ca_coords, c_coords)
                 
                 # Get pLM embeddings
                 pLM_embeddings = masked_outputs['sequence_output']
@@ -472,10 +492,16 @@ def main():
     include_structural_tokens = os.path.exists(struct_token_path)
     print(f"Structural tokens available: {include_structural_tokens}")
     
+    # Check if embeddings directory exists
+    embeddings_path = os.path.join(config.data.data_path, "embeddings")
+    load_embeddings = os.path.exists(embeddings_path)
+    print(f"Pre-computed embeddings available: {load_embeddings}")
+    
     full_dataset = EfficientProteinDataset(
         config.data.data_path, 
         max_seq_len=config.training.max_seq_len,
-        include_structural_tokens=include_structural_tokens
+        include_structural_tokens=include_structural_tokens,
+        load_embeddings=load_embeddings
     )
     
     # Create train-validation split (80% train, 20% validation)

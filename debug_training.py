@@ -5,7 +5,7 @@ Debug script to identify why training might be stuck at the first batch
 import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader
-from models.esm_model import load_esm_with_lora
+from models.geotune_esm_model import load_esm_with_lora
 from utils.data_utils import EfficientProteinDataset, collate_fn
 from utils.geom_utils import GeometricConstraints
 import os
