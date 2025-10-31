@@ -48,14 +48,17 @@ def parse_args():
     return parser.parse_args()
 
 
-def train_epoch(model, dataloader, optimizer, scheduler, dihedral_constraints, device, config, structure_alignment_loss=None, frozen_gnn=None):
+def train_epoch(model, dataloader, optimizer, scheduler, dihedral_constraints, device, config, structure_alignment_loss=None, frozen_gnn=None, scaler=None):
     """Train for one epoch with dihedral angle constraints and structure alignment"""
     model.train()
     total_loss = 0
     constraint_loss_total = 0
     mlm_loss_total = 0
     structure_alignment_loss_total = 0
-    
+
+    # Get gradient accumulation steps
+    gradient_accumulation_steps = getattr(config.training, 'gradient_accumulation_steps', 1)
+
     progress_bar = tqdm(dataloader, desc="Training")
     
     for batch_idx, batch in enumerate(progress_bar):
@@ -109,88 +112,98 @@ def train_epoch(model, dataloader, optimizer, scheduler, dihedral_constraints, d
                 print(f"⚠️  WARNING: Found sequence of length {max_len}, this may cause training to be very slow.")
                 print(f"   Consider using --max_seq_len 200 or shorter for faster training during debugging.")
         
-        # Forward pass
-        outputs = model(
-            input_ids=input_ids,
-            attention_mask=attention_mask
-        )
-        
-        # Calculate MLM loss (masked language modeling)
-        # For this example, we'll create masked tokens randomly
-        seq_output = outputs['sequence_output']
-        
-        # Create random masks for MLM task
-        batch_size, seq_len, hidden_dim = seq_output.shape
-        mask_ratio = 0.15  # Standard ESM masking ratio
-        
-        # Create mask for masking tokens (ignore padding positions)
-        mask_positions = (torch.rand(batch_size, seq_len, device=device) < mask_ratio) & (attention_mask.bool())
-        
-        # Clone input_ids to create labels
-        labels = input_ids.clone()
-        labels[~mask_positions] = -100  # Ignore non-masked positions in loss
-        
-        # Create masked input
-        masked_input_ids = input_ids.clone()
-        masked_input_ids[mask_positions] = 4  # Use mask token ID (4 in our mapping)
-        
-        # Recompute with masked inputs to get predictions for masked positions
-        masked_outputs = model(
-            input_ids=masked_input_ids,
-            attention_mask=attention_mask
-        )
-        
-        # Calculate MLM loss
-        seq_logits = model.lm_head(masked_outputs['sequence_output'])
-        mlm_loss = nn.CrossEntropyLoss(ignore_index=-100)(seq_logits.view(-1, seq_logits.size(-1)), labels.view(-1))
+        # Use mixed precision if scaler is provided
+        use_amp = scaler is not None
+
+        # Forward pass with automatic mixed precision
+        with torch.cuda.amp.autocast(enabled=use_amp):
+            outputs = model(
+                input_ids=input_ids,
+                attention_mask=attention_mask
+            )
+
+            # Calculate MLM loss (masked language modeling)
+            # For this example, we'll create masked tokens randomly
+            seq_output = outputs['sequence_output']
+
+            # Create random masks for MLM task
+            batch_size, seq_len, hidden_dim = seq_output.shape
+            mask_ratio = 0.15  # Standard ESM masking ratio
+
+            # Create mask for masking tokens (ignore padding positions)
+            mask_positions = (torch.rand(batch_size, seq_len, device=device) < mask_ratio) & (attention_mask.bool())
+
+            # Clone input_ids to create labels
+            labels = input_ids.clone()
+            labels[~mask_positions] = -100  # Ignore non-masked positions in loss
+
+            # Create masked input
+            masked_input_ids = input_ids.clone()
+            masked_input_ids[mask_positions] = 4  # Use mask token ID (4 in our mapping)
+
+            # Recompute with masked inputs to get predictions for masked positions
+            masked_outputs = model(
+                input_ids=masked_input_ids,
+                attention_mask=attention_mask
+            )
+
+            # Calculate MLM loss
+            seq_logits = model.lm_head(masked_outputs['sequence_output'])
+            mlm_loss = nn.CrossEntropyLoss(ignore_index=-100)(seq_logits.view(-1, seq_logits.size(-1)), labels.view(-1))
         
         # Calculate dihedral angle constraint loss
         # Add timing for constraint calculation to identify bottlenecks
         constraint_start_time = time.time()
-        dihedral_losses = dihedral_constraints(
-            masked_outputs['sequence_output'], 
-            n_coords, 
-            ca_coords, 
-            c_coords, 
-            attention_mask
-        )
-        total_dihedral_loss = dihedral_losses['total_dihedral_loss']
-        constraint_time = time.time() - constraint_start_time
-        
-        # Calculate structure alignment loss if structural tokens are available
-        struct_align_loss = torch.tensor(0.0, device=device, requires_grad=True)
-        if structure_alignment_loss is not None and has_structural_tokens:
-            # Get structural tokens
-            structure_tokens = batch['structural_tokens'].to(device)
-            
-            # Use pre-computed embeddings if available, otherwise generate using frozen GNN
-            if has_precomputed_embeddings:
-                # Use pre-computed embeddings
-                pGNN_embeddings = batch['precomputed_embeddings'].to(device)
-            else:
-                # Generate pGNN embeddings using the frozen GNN (inference only)
-                with torch.no_grad():
-                    pGNN_embeddings = frozen_gnn(n_coords, ca_coords, c_coords)
-            
-            # Get pLM embeddings
-            pLM_embeddings = masked_outputs['sequence_output']
-            
-            # Calculate structure alignment loss
-            struct_align_results = structure_alignment_loss(
-                pLM_embeddings=pLM_embeddings,
-                pGNN_embeddings=pGNN_embeddings,
-                structure_tokens=structure_tokens,
-                attention_mask=attention_mask
+
+        with torch.cuda.amp.autocast(enabled=use_amp):
+            dihedral_losses = dihedral_constraints(
+                masked_outputs['sequence_output'],
+                n_coords,
+                ca_coords,
+                c_coords,
+                attention_mask
             )
-            struct_align_loss = struct_align_results['total_loss']
-        
-        # Combine all losses
-        combined_loss = mlm_loss + config.model.constraint_weight * total_dihedral_loss + struct_align_loss
+            total_dihedral_loss = dihedral_losses['total_dihedral_loss']
+            constraint_time = time.time() - constraint_start_time
+
+            # Calculate structure alignment loss if structural tokens are available
+            struct_align_loss = torch.tensor(0.0, device=device, requires_grad=True)
+            if structure_alignment_loss is not None and has_structural_tokens:
+                # Get structural tokens
+                structure_tokens = batch['structural_tokens'].to(device)
+
+                # Use pre-computed embeddings if available, otherwise generate using frozen GNN
+                if has_precomputed_embeddings:
+                    # Use pre-computed embeddings
+                    pGNN_embeddings = batch['precomputed_embeddings'].to(device)
+                else:
+                    # Generate pGNN embeddings using the frozen GNN (inference only)
+                    with torch.no_grad():
+                        pGNN_embeddings = frozen_gnn(n_coords, ca_coords, c_coords)
+
+                # Get pLM embeddings
+                pLM_embeddings = masked_outputs['sequence_output']
+
+                # Calculate structure alignment loss
+                struct_align_results = structure_alignment_loss(
+                    pLM_embeddings=pLM_embeddings,
+                    pGNN_embeddings=pGNN_embeddings,
+                    structure_tokens=structure_tokens,
+                    attention_mask=attention_mask
+                )
+                struct_align_loss = struct_align_results['total_loss']
+
+            # Combine all losses
+            combined_loss = mlm_loss + config.model.constraint_weight * total_dihedral_loss + struct_align_loss
+
+            # Scale loss for gradient accumulation
+            combined_loss = combined_loss / gradient_accumulation_steps
         
         # Log loss components immediately to wandb for debugging
+        # Note: combined_loss is scaled by gradient_accumulation_steps, so multiply back for logging
         if config.logging.use_wandb:
             wandb.log({
-                'train_batch_loss': combined_loss.item(),
+                'train_batch_loss': combined_loss.item() * gradient_accumulation_steps,
                 'train_batch_mlm_loss': mlm_loss.item(),
                 'train_batch_dihedral_loss': total_dihedral_loss.item(),
                 'train_batch_struct_align_loss': struct_align_loss.item(),
@@ -202,32 +215,53 @@ def train_epoch(model, dataloader, optimizer, scheduler, dihedral_constraints, d
                 'constraint_calc_time': constraint_time  # Time spent on constraint calculation
             })
         
-        # Backward pass
-        optimizer.zero_grad()
-        combined_loss.backward()
-        
-        # Log gradient norms for debugging
-        if batch_idx % 10 == 0:
-            total_norm = 0
-            param_count = 0
-            for p in model.parameters():
-                if p.grad is not None:
-                    param_count += 1
-                    param_norm = p.grad.data.norm(2)
-                    total_norm += param_norm.item() ** 2
-            total_norm = total_norm ** (1. / 2)
-            
-            if config.logging.use_wandb:
-                wandb.log({
-                    'grad_norm': total_norm,
-                    'param_count_with_grad': param_count
-                })
-        
-        optimizer.step()
-        scheduler.step()
+        # Backward pass with gradient accumulation and mixed precision
+        if scaler is not None:
+            # Mixed precision backward
+            scaler.scale(combined_loss).backward()
+        else:
+            # Standard backward
+            combined_loss.backward()
+
+        # Only update weights every gradient_accumulation_steps
+        if (batch_idx + 1) % gradient_accumulation_steps == 0:
+            # Unscale gradients and clip them
+            if scaler is not None:
+                scaler.unscale_(optimizer)
+
+            # Clip gradients
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+
+            # Log gradient norms for debugging
+            if batch_idx % 10 == 0:
+                total_norm = 0
+                param_count = 0
+                for p in model.parameters():
+                    if p.grad is not None:
+                        param_count += 1
+                        param_norm = p.grad.data.norm(2)
+                        total_norm += param_norm.item() ** 2
+                total_norm = total_norm ** (1. / 2)
+
+                if config.logging.use_wandb:
+                    wandb.log({
+                        'grad_norm': total_norm,
+                        'param_count_with_grad': param_count
+                    })
+
+            # Optimizer step
+            if scaler is not None:
+                scaler.step(optimizer)
+                scaler.update()
+            else:
+                optimizer.step()
+
+            scheduler.step()
+            optimizer.zero_grad()
         
         # Update progress bar
-        total_loss += combined_loss.item()
+        # Note: combined_loss is scaled by gradient_accumulation_steps, so multiply back
+        total_loss += combined_loss.item() * gradient_accumulation_steps
         constraint_loss_total += total_dihedral_loss.item()
         mlm_loss_total += mlm_loss.item()
         structure_alignment_loss_total += struct_align_loss.item()
@@ -236,7 +270,7 @@ def train_epoch(model, dataloader, optimizer, scheduler, dihedral_constraints, d
         batch_time = time.time() - batch_start_time
         
         progress_bar.set_postfix({
-            'Loss': f'{combined_loss.item():.4f}',
+            'Loss': f'{combined_loss.item() * gradient_accumulation_steps:.4f}',
             'MLM': f'{mlm_loss.item():.4f}',
             'Dihedral': f'{total_dihedral_loss.item():.4f}',
             'StructAlign': f'{struct_align_loss.item():.4f}',
@@ -443,7 +477,15 @@ def main():
     }
     model, tokenizer = load_esm_with_lora(config.model.model_name, lora_params)
     model.to(device)
-    
+
+    # Enable gradient checkpointing if configured
+    if hasattr(config.training, 'use_gradient_checkpointing') and config.training.use_gradient_checkpointing:
+        if hasattr(model.model, 'gradient_checkpointing_enable'):
+            model.model.gradient_checkpointing_enable()
+            print("Gradient checkpointing enabled")
+        else:
+            print("Warning: Gradient checkpointing not supported by this model")
+
     # Print trainable parameters
     trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
     total_params = sum(p.numel() for p in model.parameters())
@@ -473,8 +515,9 @@ def main():
         physical_weight=0.5
     ).to(device)
     
-    # Initialize frozen pre-trained GNN (e.g. GearNet) - try to use proper implementation
-    frozen_gnn = PretrainedGNNWrapper(hidden_dim=esm_hidden_size, use_gearnet_stub=False).to(device)
+    # Initialize frozen pre-trained GNN (e.g. GearNet) - use stub to avoid TorchDrug dependency
+    # Set use_gearnet_stub=True to avoid TorchDrug/RDKit compatibility issues
+    frozen_gnn = PretrainedGNNWrapper(hidden_dim=esm_hidden_size, use_gearnet_stub=True).to(device)
     frozen_gnn.eval()  # Set to evaluation mode to ensure no gradients
     
     # Load dataset
@@ -550,23 +593,35 @@ def main():
     )
     
     # Setup scheduler
-    total_steps = len(train_loader) * config.training.num_epochs
+    # Adjust total steps for gradient accumulation
+    gradient_accumulation_steps = getattr(config.training, 'gradient_accumulation_steps', 1)
+    total_steps = (len(train_loader) // gradient_accumulation_steps) * config.training.num_epochs
     scheduler = get_linear_schedule_with_warmup(
         optimizer,
         num_warmup_steps=config.training.warmup_steps,
         num_training_steps=total_steps
     )
-    
+
+    # Setup mixed precision scaler if enabled
+    scaler = None
+    if hasattr(config.training, 'mixed_precision') and config.training.mixed_precision:
+        if torch.cuda.is_available():
+            scaler = torch.cuda.amp.GradScaler()
+            print("Mixed precision training enabled")
+        else:
+            print("Mixed precision requested but CUDA not available, using float32")
+
     # Training loop
     print(f"Starting training for {config.training.num_epochs} epochs...")
-    
+    print(f"Effective batch size: {config.training.batch_size * gradient_accumulation_steps}")
+
     for epoch in range(config.training.num_epochs):
         print(f"\nEpoch {epoch+1}/{config.training.num_epochs}")
-        
+
         # Train
         train_loss, train_mlm_loss, train_constraint_loss, train_struct_align_loss = train_epoch(
             model, train_loader, optimizer, scheduler, dihedral_constraints, device, config,
-            structure_alignment_loss=structure_alignment_loss, frozen_gnn=frozen_gnn
+            structure_alignment_loss=structure_alignment_loss, frozen_gnn=frozen_gnn, scaler=scaler
         )
         
         # Validate

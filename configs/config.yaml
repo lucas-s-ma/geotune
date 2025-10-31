@@ -21,13 +21,16 @@ lora:
 
 # Training configuration
 training:
-  batch_size: 8           # Batch size - increased for better efficiency
+  batch_size: 2           # Batch size - reduced for 16GB GPU
+  gradient_accumulation_steps: 4  # Accumulate gradients (effective batch_size = 2*4 = 8)
   learning_rate: 1e-3     # Learning rate
   num_epochs: 10          # Number of epochs
   warmup_steps: 100       # Warmup steps for scheduler
-  max_seq_len: 1024       # Maximum sequence length
+  max_seq_len: 512        # Maximum sequence length - reduced for memory
   seed: 42                # Random seed
   output_dir: "outputs"   # Output directory
+  use_gradient_checkpointing: true  # Enable gradient checkpointing to save memory
+  mixed_precision: true   # Use fp16 mixed precision training
 
 # Data configuration
 data:
