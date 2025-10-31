@@ -194,7 +194,7 @@ def train_epoch(model, dataloader, optimizer, scheduler, dihedral_constraints, d
                 struct_align_loss = struct_align_results['total_loss']
 
             # Combine all losses
-            combined_loss = mlm_loss + config.model.constraint_weight * total_dihedral_loss + struct_align_loss
+            combined_loss = mlm_loss + config.model.constraint_weight * total_dihedral_loss + 0.1* struct_align_loss
 
             # Scale loss for gradient accumulation
             combined_loss = combined_loss / gradient_accumulation_steps

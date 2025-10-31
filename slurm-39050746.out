@@ -1,0 +1,74 @@
+==========================================
+GEOTUNE CLUSTER DEBUG SCRIPT
+==========================================
+
+Step 1: Checking code sync status...
+------------------------------------------
+Checking utils/data_utils.py for ESM2 token mapping...
+✅ data_utils.py has CORRECT ESM2 token mapping (L=4, A=5, ...)
+Checking scripts/train.py for mask token...
+✅ train.py uses CORRECT mask token (32)
+
+Step 2: Clearing Python cache...
+------------------------------------------
+✅ Python cache cleared
+
+Step 3: Checking dataset token IDs...
+------------------------------------------
+============================================================
+ESM2 DATASET TOKEN VALIDATOR
+============================================================
+
+Loading dataset from: data/processed/processed_dataset.pkl
+
+Dataset size: 11158 proteins
+
+============================================================
+TOKEN ID STATISTICS
+============================================================
+Total tokens: 0
+Traceback (most recent call last):
+  File "/work/sm996/co-amp/debug_dataset_tokens.py", line 133, in <module>
+    is_valid = check_dataset_tokens(dataset_path)
+  File "/work/sm996/co-amp/debug_dataset_tokens.py", line 45, in check_dataset_tokens
+    print(f"Token range: {all_tokens.min()} - {all_tokens.max()}")
+  File "/hpc/group/naderilab/sm996/miniconda3/envs/geo_project/lib/python3.10/site-packages/numpy/_core/_methods.py", line 48, in _amin
+    return umr_minimum(a, axis, None, out, keepdims, initial, where)
+ValueError: zero-size array to reduction operation minimum which has no identity
+
+Step 4: Checking git status...
+------------------------------------------
+ M .gitignore
+ D embedding_39027018.err
+ D embedding_39027018.out
+ D environment.yml
+?? embedding_39047944.err
+?? embedding_39047944.out
+?? embedding_39048187.err
+?? embedding_39048187.out
+?? geo2.yml
+?? geotune_backup.yml
+?? slurm-39050746.out
+
+156afd3 Merge branch 'main' of https://github.com/lucas-s-ma/co-amp
+c7437e7 update patch for training
+ea3129a Merge branch 'main' of https://github.com/lucas-s-ma/co-amp
+99ab889 fix cuda?
+2774444 Merge branch 'main' of https://github.com/lucas-s-ma/co-amp
+
+Step 5: Python environment info...
+------------------------------------------
+Python 3.10.19
+PyTorch version:
+2.9.0+cu128
+CUDA available:
+False
+
+==========================================
+DEBUG COMPLETE
+==========================================
+
+If all checks passed, try running training with:
+  CUDA_LAUNCH_BLOCKING=1 python scripts/train.py --config configs/config.yaml --data_path data/processed
+
+This will show the EXACT line where CUDA error occurs.
