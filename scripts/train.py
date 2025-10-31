@@ -139,7 +139,7 @@ def train_epoch(model, dataloader, optimizer, scheduler, dihedral_constraints, d
 
             # Create masked input
             masked_input_ids = input_ids.clone()
-            masked_input_ids[mask_positions] = 4  # Use mask token ID (4 in our mapping)
+            masked_input_ids[mask_positions] = 32  # Use <mask> token ID (32 in ESM2)
 
             # Recompute with masked inputs to get predictions for masked positions
             masked_outputs = model(
@@ -335,10 +335,10 @@ def validate(model, dataloader, dihedral_constraints, device, config, structure_
             mask_positions = (torch.rand(batch_size, seq_len, device=device) < mask_ratio) & (attention_mask.bool())
             labels = input_ids.clone()
             labels[~mask_positions] = -100
-            
+
             masked_input_ids = input_ids.clone()
-            masked_input_ids[mask_positions] = 4
-            
+            masked_input_ids[mask_positions] = 32  # Use <mask> token ID (32 in ESM2)
+
             masked_outputs = model(
                 input_ids=masked_input_ids,
                 attention_mask=attention_mask

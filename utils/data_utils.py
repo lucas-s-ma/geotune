@@ -154,14 +154,14 @@ class ProteinStructureDataset(Dataset):
         # Pad or truncate to max length
         if len(token_ids) < self.max_seq_len:
             padding_length = self.max_seq_len - len(token_ids)
-            token_ids.extend([0] * padding_length)  # 0 for padding token
+            token_ids.extend([1] * padding_length)  # 1 for <pad> token in ESM2
             padding_coords = np.zeros((padding_length, 3))
             n_coords = np.vstack([n_coords, padding_coords])
             ca_coords = np.vstack([ca_coords, padding_coords])
             c_coords = np.vstack([c_coords, padding_coords])
         
         # Create attention mask (1 for real tokens, 0 for padding)
-        attention_mask = [1 if token != 0 else 0 for token in token_ids]
+        attention_mask = [1 if token != 1 else 0 for token in token_ids]  # 1 is <pad> in ESM2
         
         result = {
             'input_ids': torch.tensor(token_ids, dtype=torch.long),
@@ -198,17 +198,27 @@ class ProteinStructureDataset(Dataset):
         return result
     
     def sequence_to_tokens(self, sequence):
-        """Convert amino acid sequence to token IDs"""
-        # Simple mapping: A->5, C->6, D->7, E->8, F->9, G->10, H->11, I->12, K->13, L->14, 
-        # M->15, N->16, P->17, Q->18, R->19, S->20, T->21, V->22, W->23, Y->24
-        # 1 for BOS, 2 for EOS, 3 for MASK, 4 for PAD
+        """
+        Convert amino acid sequence to token IDs using ESM2 vocabulary
+
+        ESM2 token mapping:
+        - 0: <cls>
+        - 1: <pad>
+        - 2: <eos>
+        - 3: <unk>
+        - 4-23: Standard amino acids (L, A, G, V, S, E, R, T, I, D, P, K, Q, N, F, Y, M, H, W, C)
+        - 32: <mask>
+        """
+        # ESM2 amino acid to token ID mapping (IDs 4-23)
+        # Order: L, A, G, V, S, E, R, T, I, D, P, K, Q, N, F, Y, M, H, W, C
         aa_to_id = {
-            'A': 5, 'R': 6, 'N': 7, 'D': 8, 'C': 9, 'Q': 10, 'E': 11, 'G': 12,
-            'H': 13, 'I': 14, 'L': 15, 'K': 16, 'M': 17, 'F': 18, 'P': 19,
-            'S': 20, 'T': 21, 'W': 22, 'Y': 23, 'V': 24
+            'L': 4, 'A': 5, 'G': 6, 'V': 7, 'S': 8, 'E': 9, 'R': 10, 'T': 11,
+            'I': 12, 'D': 13, 'P': 14, 'K': 15, 'Q': 16, 'N': 17, 'F': 18,
+            'Y': 19, 'M': 20, 'H': 21, 'W': 22, 'C': 23
         }
-        
-        tokens = [aa_to_id.get(aa, 0) for aa in sequence]  # 0 for unknown amino acids
+
+        # Use <unk> token (3) for unknown amino acids, <pad> token (1) for padding
+        tokens = [aa_to_id.get(aa, 3) for aa in sequence]  # 3 for unknown amino acids
         return tokens
 
 
@@ -430,14 +440,14 @@ class EfficientProteinDataset(Dataset):
         # Pad or truncate to max length
         if len(token_ids) < self.max_seq_len:
             padding_length = self.max_seq_len - len(token_ids)
-            token_ids.extend([0] * padding_length)  # 0 for padding token
+            token_ids.extend([1] * padding_length)  # 1 for <pad> token in ESM2
             padding_coords = np.zeros((padding_length, 3))
             n_coords = np.vstack([n_coords, padding_coords])
             ca_coords = np.vstack([ca_coords, padding_coords])
             c_coords = np.vstack([c_coords, padding_coords])
         
         # Create attention mask (1 for real tokens, 0 for padding)
-        attention_mask = [1 if token != 0 else 0 for token in token_ids]
+        attention_mask = [1 if token != 1 else 0 for token in token_ids]  # 1 is <pad> in ESM2
         
         result = {
             'input_ids': torch.tensor(token_ids, dtype=torch.long),
@@ -487,15 +497,25 @@ class EfficientProteinDataset(Dataset):
         return result
     
     def sequence_to_tokens(self, sequence):
-        """Convert amino acid sequence to token IDs"""
-        # Simple mapping: A->5, C->6, D->7, E->8, F->9, G->10, H->11, I->12, K->13, L->14, 
-        # M->15, N->16, P->17, Q->18, R->19, S->20, T->21, V->22, W->23, Y->24
-        # 1 for BOS, 2 for EOS, 3 for MASK, 4 for PAD
+        """
+        Convert amino acid sequence to token IDs using ESM2 vocabulary
+
+        ESM2 token mapping:
+        - 0: <cls>
+        - 1: <pad>
+        - 2: <eos>
+        - 3: <unk>
+        - 4-23: Standard amino acids (L, A, G, V, S, E, R, T, I, D, P, K, Q, N, F, Y, M, H, W, C)
+        - 32: <mask>
+        """
+        # ESM2 amino acid to token ID mapping (IDs 4-23)
+        # Order: L, A, G, V, S, E, R, T, I, D, P, K, Q, N, F, Y, M, H, W, C
         aa_to_id = {
-            'A': 5, 'R': 6, 'N': 7, 'D': 8, 'C': 9, 'Q': 10, 'E': 11, 'G': 12,
-            'H': 13, 'I': 14, 'L': 15, 'K': 16, 'M': 17, 'F': 18, 'P': 19,
-            'S': 20, 'T': 21, 'W': 22, 'Y': 23, 'V': 24
+            'L': 4, 'A': 5, 'G': 6, 'V': 7, 'S': 8, 'E': 9, 'R': 10, 'T': 11,
+            'I': 12, 'D': 13, 'P': 14, 'K': 15, 'Q': 16, 'N': 17, 'F': 18,
+            'Y': 19, 'M': 20, 'H': 21, 'W': 22, 'C': 23
         }
-        
-        tokens = [aa_to_id.get(aa, 0) for aa in sequence]  # 0 for unknown amino acids
+
+        # Use <unk> token (3) for unknown amino acids, <pad> token (1) for padding
+        tokens = [aa_to_id.get(aa, 3) for aa in sequence]  # 3 for unknown amino acids
         return tokens
