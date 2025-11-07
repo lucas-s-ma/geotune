@@ -97,18 +97,20 @@ def convert_3di_to_ints(ascii_seq: str) -> List[int]:
     Convert 3Di ASCII sequence to integer tokens.
 
     Foldseek 3Di alphabet uses 20 structural states, represented by the 20 standard
-    amino acids, plus 'X' for unknown.
+    amino acids (A-Y, excluding B,J,O,U,X). We map all valid characters to range [0, 19],
+    and unknown characters to token 19 (the last valid token).
     """
     struct_to_int = {
         'A': 0, 'C': 1, 'D': 2, 'E': 3, 'F': 4, 'G': 5, 'H': 6, 'I': 7,
         'K': 8, 'L': 9, 'M': 10, 'N': 11, 'P': 12, 'Q': 13, 'R': 14,
-        'S': 15, 'T': 16, 'V': 17, 'W': 18, 'Y': 19, 'X': 20
+        'S': 15, 'T': 16, 'V': 17, 'W': 18, 'Y': 19  # Note: X is NOT in standard 3Di alphabet
     }
     tokens = []
     for char in ascii_seq:
-        token = struct_to_int.get(char.upper(), 20)  # Default to 'X' for unknown
+        # For unknown characters (including 'X', lowercase, or other unexpected chars), map to token 19
+        token = struct_to_int.get(char.upper(), 19)
         if char.upper() not in struct_to_int:
-            print(f"Warning: Unknown 3Di character '{char}' mapped to token 20 (X)")
+            print(f"Warning: Unknown 3Di character '{char}' mapped to token 19 (unknown)")
         tokens.append(token)
     return tokens
 
