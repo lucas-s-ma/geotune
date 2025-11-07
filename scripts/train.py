@@ -659,7 +659,7 @@ def main():
         print(f"  Val Loss: {val_loss:.4f} (MLM: {val_mlm_loss:.4f}, Constraint: {val_constraint_loss:.4f}, StructAlign: {val_struct_align_loss:.4f})")
         
         # Save model checkpoint periodically
-        if (epoch + 1) % 5 == 0:  # Save every 5 epochs
+        if (epoch + 1) % 2 == 0:  # Save every 2 epochs
             checkpoint_dir = os.path.join(config.training.output_dir, f"checkpoint_epoch_{epoch+1}")
             os.makedirs(checkpoint_dir, exist_ok=True)
             
