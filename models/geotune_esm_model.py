@@ -126,6 +126,27 @@ class ESMWithConstraints(nn.Module):
 
     def save_lora_adapters(self, save_path):
         if hasattr(self.model, 'save_pretrained'):
+            # Convert OmegaConf objects in PEFT config to regular Python types to avoid JSON serialization issues
+            from omegaconf import ListConfig, DictConfig, OmegaConf
+            import copy
+            
+            # Get the peft config from the model and make a copy
+            peft_config = self.model.peft_config
+            if peft_config:
+                # Convert any ListConfig or DictConfig objects to regular Python objects
+                for adapter_name, config in peft_config.items():
+                    if hasattr(config, '__dict__'):
+                        # Look through the config object's attributes
+                        for attr_name in dir(config):
+                            if attr_name.startswith('_'):
+                                continue  # Skip private attributes
+                            
+                            attr_value = getattr(config, attr_name)
+                            if isinstance(attr_value, ListConfig):
+                                setattr(config, attr_name, OmegaConf.to_container(attr_value))
+                            elif isinstance(attr_value, DictConfig):
+                                setattr(config, attr_name, OmegaConf.to_container(attr_value))
+            
             self.model.save_pretrained(save_path)
         else:
             raise AttributeError("Model doesn't support saving LoRA adapters")
