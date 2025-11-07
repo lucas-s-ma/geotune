@@ -19,7 +19,11 @@ project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root))
 
 from utils.data_utils import ProteinStructureDataset
-from scripts.generate_foldseek_3di import generate_foldseek_tokens, check_foldseek_installation
+# Handle import from either relative or absolute context
+try:
+    from .generate_foldseek_tokens import generate_foldseek_tokens, check_foldseek_installation
+except ImportError:
+    from generate_foldseek_tokens import generate_foldseek_tokens, check_foldseek_installation
 
 
 # The inefficient 'process_pdb_to_features' function has been removed.

@@ -96,21 +96,19 @@ def convert_3di_to_ints(ascii_seq: str) -> List[int]:
     """
     Convert 3Di ASCII sequence to integer tokens.
 
-    Foldseek 3Di alphabet uses 20 structural states (A-Y, excluding some letters).
-    Unknown characters are mapped to 0 (default structural state).
+    Foldseek 3Di alphabet uses 20 structural states, represented by the 20 standard
+    amino acids, plus 'X' for unknown.
     """
     struct_to_int = {
         'A': 0, 'C': 1, 'D': 2, 'E': 3, 'F': 4, 'G': 5, 'H': 6, 'I': 7,
         'K': 8, 'L': 9, 'M': 10, 'N': 11, 'P': 12, 'Q': 13, 'R': 14,
-        'S': 15, 'T': 16, 'V': 17, 'W': 18, 'Y': 19
+        'S': 15, 'T': 16, 'V': 17, 'W': 18, 'Y': 19, 'X': 20
     }
-    # Map unknown characters to 0 instead of 20 to avoid out-of-bounds errors
-    # (CrossEntropyLoss expects tokens in range [0, num_classes-1])
     tokens = []
     for char in ascii_seq:
-        token = struct_to_int.get(char.upper(), 0)  # Use uppercase and default to 0
-        if char not in struct_to_int:
-            print(f"Warning: Unknown 3Di character '{char}' mapped to token 0")
+        token = struct_to_int.get(char.upper(), 20)  # Default to 'X' for unknown
+        if char.upper() not in struct_to_int:
+            print(f"Warning: Unknown 3Di character '{char}' mapped to token 20 (X)")
         tokens.append(token)
     return tokens
 

@@ -140,5 +140,5 @@ if __name__ == "__main__":
         print("\nNext steps:")
         print("1. Verify data_utils.py has the correct ESM2 token mapping")
         print("2. Clear Python cache: find . -type d -name __pycache__ -exec rm -rf {} +")
-        print("3. Regenerate dataset: python scripts/process_data.py ...")
+        print("3. Regenerate dataset: python data_pipeline/process_dataset.py ...")
     print(f"{'='*60}\n")

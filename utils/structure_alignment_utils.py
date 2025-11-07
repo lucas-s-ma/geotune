@@ -15,7 +15,7 @@ class StructureAlignmentLoss(nn.Module):
     def __init__(
         self,
         hidden_dim: int,
-        num_structural_classes: int = 20,
+        num_structural_classes: int = 21,  # Default to 21 for Foldseek (20 + X)
         shared_projection_dim: int = 512,
         latent_weight: float = 0.5,
         physical_weight: float = 0.5
@@ -155,12 +155,12 @@ class StructureAlignmentLoss(nn.Module):
         tokens_flat = structure_tokens.view(-1)  # (batch_size * seq_len,)
 
         # CRITICAL: Validate and clamp structural tokens to valid range [0, num_classes-1]
-        # This handles tokens generated with old buggy code that mapped unknown chars to 20
+        # This handles tokens generated with old buggy code that mapped unknown chars to a value outside of the class range
         invalid_mask = (tokens_flat >= self.num_structural_classes) | (tokens_flat < 0)
         if invalid_mask.any():
             num_invalid = invalid_mask.sum().item()
             print(f"Warning: Found {num_invalid} invalid structural tokens (>= {self.num_structural_classes} or < 0). Clamping to valid range.")
-            # Clamp invalid tokens to 0 (default structural state)
+            # Clamp invalid tokens to the last class index (unknown token)
             tokens_flat = torch.clamp(tokens_flat, min=0, max=self.num_structural_classes - 1)
 
         # Apply attention mask by setting ignored positions to ignore_index

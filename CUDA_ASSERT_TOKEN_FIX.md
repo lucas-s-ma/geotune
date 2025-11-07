@@ -197,7 +197,7 @@ The current `processed_dataset.pkl` was created with the old (wrong) token IDs. 
 
 ```bash
 # Re-run data processing with corrected token mapping
-python scripts/process_data.py \
+python data_pipeline/process_dataset.py \
     --raw_dir [path_to_pdb_files] \
     --output_dir data/processed \
     --create_efficient_dataset

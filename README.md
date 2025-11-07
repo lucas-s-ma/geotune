@@ -74,7 +74,7 @@ python scripts/download_data.py --output_dir data/pdb
 
 2. Process data:
 ```bash
-python scripts/process_data.py --raw_dir data/pdb --output_dir data/processed
+python data_pipeline/process_dataset.py --raw_dir data/pdb --output_dir data/processed
 ```
 
 3. Train model with geometric constraints:

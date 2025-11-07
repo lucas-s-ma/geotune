@@ -55,7 +55,10 @@ def train_epoch(model, dataloader, optimizer, scheduler, dihedral_constraints, d
     total_loss = 0
     constraint_loss_total = 0
     mlm_loss_total = 0
-    structure_alignment_loss_total = 0
+    struct_align_total_loss = 0
+    struct_align_latent_loss = 0
+    struct_align_physical_loss = 0
+    num_batches = 0  # Track number of batches for averaging
 
     # Get gradient accumulation steps
     gradient_accumulation_steps = getattr(config.training, 'gradient_accumulation_steps', 1)
@@ -63,10 +66,6 @@ def train_epoch(model, dataloader, optimizer, scheduler, dihedral_constraints, d
     progress_bar = tqdm(dataloader, desc="Training")
     
     for batch_idx, batch in enumerate(progress_bar):
-        # Log batch timing
-        import time
-        batch_start_time = time.time()
-        
         # Move batch to device
         input_ids = batch['input_ids'].to(device)
         attention_mask = batch['attention_mask'].to(device)
@@ -90,33 +89,8 @@ def train_epoch(model, dataloader, optimizer, scheduler, dihedral_constraints, d
         # Check if pre-computed embeddings are available
         has_precomputed_embeddings = 'precomputed_embeddings' in batch
         
-        # Log tensor shapes for debugging
-        if batch_idx == 0:
-            actual_seq_lengths = torch.sum(attention_mask, dim=1)
-            print(f"Input IDs shape: {input_ids.shape}")
-            print(f"Attention mask shape: {attention_mask.shape}")
-            print(f"N coordinates shape: {n_coords.shape}")
-            print(f"CA coordinates shape: {ca_coords.shape}")
-            print(f"C coordinates shape: {c_coords.shape}")
-            print(f"Structural tokens available: {has_structural_tokens}")
-            print(f"Pre-computed embeddings available: {has_precomputed_embeddings}")
-            if has_structural_tokens:
-                print(f"Structural tokens shape: {batch['structural_tokens'].shape}")
-            if has_precomputed_embeddings:
-                print(f"Pre-computed embeddings shape: {batch['precomputed_embeddings'].shape}")
-            print(f"Actual sequence lengths in batch: {actual_seq_lengths.tolist()}")
-            print(f"Max sequence length in batch: {actual_seq_lengths.max().item()}")
-            
-            # Warn if any sequence is very long (>200 residues)
-            max_len = actual_seq_lengths.max().item()
-            if max_len > 200:
-                print(f"⚠️  WARNING: Found sequence of length {max_len}, this may cause training to be very slow.")
-                print(f"   Consider using --max_seq_len 200 or shorter for faster training during debugging.")
-        
-        # Use mixed precision if scaler is provided
-        use_amp = scaler is not None
-
         # Forward pass with automatic mixed precision
+        use_amp = scaler is not None
         with torch.amp.autocast('cuda', enabled=use_amp):
             outputs = model(
                 input_ids=input_ids,
@@ -124,7 +98,6 @@ def train_epoch(model, dataloader, optimizer, scheduler, dihedral_constraints, d
             )
 
             # Calculate MLM loss (masked language modeling)
-            # For this example, we'll create masked tokens randomly
             seq_output = outputs['sequence_output']
 
             # Create random masks for MLM task
@@ -153,9 +126,6 @@ def train_epoch(model, dataloader, optimizer, scheduler, dihedral_constraints, d
             mlm_loss = nn.CrossEntropyLoss(ignore_index=-100)(seq_logits.view(-1, seq_logits.size(-1)), labels.view(-1))
         
         # Calculate dihedral angle constraint loss
-        # Add timing for constraint calculation to identify bottlenecks
-        constraint_start_time = time.time()
-
         with torch.amp.autocast('cuda', enabled=use_amp):
             dihedral_losses = dihedral_constraints(
                 masked_outputs['sequence_output'],
@@ -165,10 +135,12 @@ def train_epoch(model, dataloader, optimizer, scheduler, dihedral_constraints, d
                 attention_mask
             )
             total_dihedral_loss = dihedral_losses['total_dihedral_loss']
-            constraint_time = time.time() - constraint_start_time
 
             # Calculate structure alignment loss if structural tokens are available
             struct_align_loss = torch.tensor(0.0, device=device, requires_grad=True)
+            latent_loss = torch.tensor(0.0, device=device, requires_grad=True)
+            physical_loss = torch.tensor(0.0, device=device, requires_grad=True)
+            
             if structure_alignment_loss is not None and has_structural_tokens:
                 # Get structural tokens
                 structure_tokens = batch['structural_tokens'].to(device)
@@ -193,9 +165,11 @@ def train_epoch(model, dataloader, optimizer, scheduler, dihedral_constraints, d
                     attention_mask=attention_mask
                 )
                 struct_align_loss = struct_align_results['total_loss']
+                latent_loss = struct_align_results.get('latent_loss', torch.tensor(0.0, device=device))
+                physical_loss = struct_align_results.get('physical_loss', torch.tensor(0.0, device=device))
 
             # Combine all losses
-            combined_loss = mlm_loss + config.model.constraint_weight * total_dihedral_loss + 0.1* struct_align_loss
+            combined_loss = mlm_loss + config.model.constraint_weight * total_dihedral_loss + 0.1 * struct_align_loss
 
             # Scale loss for gradient accumulation
             combined_loss = combined_loss / gradient_accumulation_steps
@@ -208,12 +182,11 @@ def train_epoch(model, dataloader, optimizer, scheduler, dihedral_constraints, d
                 'train_batch_mlm_loss': mlm_loss.item(),
                 'train_batch_dihedral_loss': total_dihedral_loss.item(),
                 'train_batch_struct_align_loss': struct_align_loss.item(),
+                'train_batch_foldseek_loss': physical_loss.item(),  # Physical corresponds to structural token prediction
+                'train_batch_gnn_loss': latent_loss.item(),  # Latent corresponds to contrastive GNN learning
                 'train_batch_phi_loss': dihedral_losses['phi_loss'].item(),
                 'train_batch_psi_loss': dihedral_losses['psi_loss'].item(),
                 'learning_rate': scheduler.get_last_lr()[0],
-                'batch_idx': batch_idx,
-                'epoch_batch_idx': batch_idx,  # To track within epoch progress
-                'constraint_calc_time': constraint_time  # Time spent on constraint calculation
             })
         
         # Backward pass with gradient accumulation and mixed precision
@@ -260,43 +233,45 @@ def train_epoch(model, dataloader, optimizer, scheduler, dihedral_constraints, d
             scheduler.step()
             optimizer.zero_grad()
         
-        # Update progress bar
-        # Note: combined_loss is scaled by gradient_accumulation_steps, so multiply back
+        # Accumulate losses for epoch averages
         total_loss += combined_loss.item() * gradient_accumulation_steps
         constraint_loss_total += total_dihedral_loss.item()
         mlm_loss_total += mlm_loss.item()
-        structure_alignment_loss_total += struct_align_loss.item()
+        struct_align_total_loss += struct_align_loss.item()
+        struct_align_latent_loss += latent_loss.item()
+        struct_align_physical_loss += physical_loss.item()
+        num_batches += 1  # Increment batch counter
         
-        # Calculate batch processing time
-        batch_time = time.time() - batch_start_time
-        
+        # Update progress bar
         progress_bar.set_postfix({
             'Loss': f'{combined_loss.item() * gradient_accumulation_steps:.4f}',
             'MLM': f'{mlm_loss.item():.4f}',
             'Dihedral': f'{total_dihedral_loss.item():.4f}',
             'StructAlign': f'{struct_align_loss.item():.4f}',
-            'LR': f'{scheduler.get_last_lr()[0]:.2e}',
-            'Time': f'{batch_time:.2f}s',
-            'CnstTime': f'{constraint_time:.2f}s'
         })
         
 
+    # Calculate epoch averages
+    avg_loss = total_loss / num_batches
+    avg_constraint_loss = constraint_loss_total / num_batches
+    avg_mlm_loss = mlm_loss_total / num_batches
+    avg_struct_align_loss = struct_align_total_loss / num_batches
+    avg_latent_loss = struct_align_latent_loss / num_batches if num_batches > 0 else 0
+    avg_physical_loss = struct_align_physical_loss / num_batches if num_batches > 0 else 0
     
-    avg_loss = total_loss / len(dataloader)
-    avg_constraint_loss = constraint_loss_total / len(dataloader)
-    avg_mlm_loss = mlm_loss_total / len(dataloader)
-    avg_struct_align_loss = structure_alignment_loss_total / len(dataloader)
-    
-    # Log epoch averages
+    # Log epoch averages for wandb (these are the important epoch-level metrics)
     if config.logging.use_wandb:
         wandb.log({
-            'epoch_avg_loss': avg_loss,
-            'epoch_avg_mlm_loss': avg_mlm_loss,
-            'epoch_avg_dihedral_loss': avg_constraint_loss,
-            'epoch_avg_struct_align_loss': avg_struct_align_loss,
+            'epoch': len(dataloader),  # Track as total batches in epoch
+            'train_loss': avg_loss,
+            'train_mlm_loss': avg_mlm_loss,
+            'train_constraint_loss': avg_constraint_loss,
+            'train_struct_align_loss': avg_struct_align_loss,
+            'train_foldseek_loss': avg_physical_loss,  # Physical loss corresponds to Foldseek-like task
+            'train_gnn_loss': avg_latent_loss,  # Latent loss corresponds to GNN-like task
         })
     
-    return avg_loss, avg_mlm_loss, avg_constraint_loss, avg_struct_align_loss
+    return avg_loss, avg_mlm_loss, avg_constraint_loss, avg_struct_align_loss, avg_latent_loss, avg_physical_loss
 
 
 def validate(model, dataloader, dihedral_constraints, device, config, structure_alignment_loss=None, frozen_gnn=None):
@@ -306,6 +281,9 @@ def validate(model, dataloader, dihedral_constraints, device, config, structure_
     constraint_loss_total = 0
     mlm_loss_total = 0
     structure_alignment_loss_total = 0
+    struct_align_latent_loss = 0
+    struct_align_physical_loss = 0
+    num_batches = 0  # Track number of batches for averaging
     
     with torch.no_grad():
         for batch_idx, batch in enumerate(tqdm(dataloader, desc="Validating")):
@@ -362,6 +340,9 @@ def validate(model, dataloader, dihedral_constraints, device, config, structure_
             
             # Calculate structure alignment loss if structural tokens are available
             struct_align_loss = torch.tensor(0.0, device=device)
+            latent_loss = torch.tensor(0.0, device=device)
+            physical_loss = torch.tensor(0.0, device=device)
+            
             if structure_alignment_loss is not None and has_structural_tokens and 'structural_tokens' in batch:
                 # Get structural tokens
                 structure_tokens = batch['structural_tokens'].to(device)
@@ -386,14 +367,19 @@ def validate(model, dataloader, dihedral_constraints, device, config, structure_
                     attention_mask=attention_mask
                 )
                 struct_align_loss = struct_align_results['total_loss']
+                latent_loss = struct_align_results.get('latent_loss', torch.tensor(0.0, device=device))
+                physical_loss = struct_align_results.get('physical_loss', torch.tensor(0.0, device=device))
             
-            # !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+            # Calculate combined loss
             combined_loss = mlm_loss + config.model.constraint_weight * total_dihedral_loss + struct_align_loss
             
             total_loss += combined_loss.item()
             constraint_loss_total += total_dihedral_loss.item()
             mlm_loss_total += mlm_loss.item()
             structure_alignment_loss_total += struct_align_loss.item()
+            struct_align_latent_loss += latent_loss.item()
+            struct_align_physical_loss += physical_loss.item()
+            num_batches += 1  # Increment batch counter
             
             # Log validation metrics to wandb
             if config.logging.use_wandb and batch_idx % 10 == 0:
@@ -402,15 +388,31 @@ def validate(model, dataloader, dihedral_constraints, device, config, structure_
                     'val_batch_mlm_loss': mlm_loss.item(),
                     'val_batch_dihedral_loss': total_dihedral_loss.item(),
                     'val_batch_struct_align_loss': struct_align_loss.item(),
+                    'val_batch_foldseek_loss': physical_loss.item(),
+                    'val_batch_gnn_loss': latent_loss.item(),
                     'val_batch': batch_idx
                 })
     
-    avg_loss = total_loss / len(dataloader)
-    avg_constraint_loss = constraint_loss_total / len(dataloader)
-    avg_mlm_loss = mlm_loss_total / len(dataloader)
-    avg_struct_align_loss = structure_alignment_loss_total / len(dataloader)
+    # Calculate epoch averages
+    avg_loss = total_loss / num_batches if num_batches > 0 else 0
+    avg_constraint_loss = constraint_loss_total / num_batches if num_batches > 0 else 0
+    avg_mlm_loss = mlm_loss_total / num_batches if num_batches > 0 else 0
+    avg_struct_align_loss = structure_alignment_loss_total / num_batches if num_batches > 0 else 0
+    avg_latent_loss = struct_align_latent_loss / num_batches if num_batches > 0 else 0
+    avg_physical_loss = struct_align_physical_loss / num_batches if num_batches > 0 else 0
     
-    return avg_loss, avg_mlm_loss, avg_constraint_loss, avg_struct_align_loss
+    # Log validation epoch averages for wandb (these are the important epoch-level metrics)
+    if config.logging.use_wandb:
+        wandb.log({
+            'val_loss': avg_loss,
+            'val_mlm_loss': avg_mlm_loss,
+            'val_constraint_loss': avg_constraint_loss,
+            'val_struct_align_loss': avg_struct_align_loss,
+            'val_foldseek_loss': avg_physical_loss,
+            'val_gnn_loss': avg_latent_loss,
+        })
+    
+    return avg_loss, avg_mlm_loss, avg_constraint_loss, avg_struct_align_loss, avg_latent_loss, avg_physical_loss
 
 
 def main():
@@ -510,7 +512,7 @@ def main():
     esm_hidden_size = model.config.hidden_size
     structure_alignment_loss = StructureAlignmentLoss(
         hidden_dim=esm_hidden_size,
-        num_structural_classes=20,  # 20 structural classes for Foldseek
+        num_structural_classes=21,  # 21 structural classes for Foldseek (20 + 'X')
         shared_projection_dim=512,
         latent_weight=0.5,
         physical_weight=0.5
@@ -529,7 +531,7 @@ def main():
     if not os.path.exists(processed_dataset_path):
         raise FileNotFoundError(
             f"Processed dataset not found at {processed_dataset_path}. "
-            f"Please run 'python scripts/process_data.py --raw_dir [path_to_pdb_files] --output_dir [path_to_save_processed_data] --create_efficient_dataset' "
+            f"Please run 'python data_pipeline/process_dataset.py --raw_dir [path_to_pdb_files] --output_dir [path_to_save_processed_data] --create_efficient_dataset' "
             f"to create the processed dataset first."
         )
     
@@ -630,18 +632,18 @@ def main():
         print(f"\nEpoch {epoch+1}/{config.training.num_epochs}")
 
         # Train
-        train_loss, train_mlm_loss, train_constraint_loss, train_struct_align_loss = train_epoch(
+        train_loss, train_mlm_loss, train_constraint_loss, train_struct_align_loss, train_latent_loss, train_physical_loss = train_epoch(
             model, train_loader, optimizer, scheduler, dihedral_constraints, device, config,
             structure_alignment_loss=structure_alignment_loss, frozen_gnn=frozen_gnn, scaler=scaler
         )
         
         # Validate
-        val_loss, val_mlm_loss, val_constraint_loss, val_struct_align_loss = validate(
+        val_loss, val_mlm_loss, val_constraint_loss, val_struct_align_loss, val_latent_loss, val_physical_loss = validate(
             model, val_loader, dihedral_constraints, device, config,
             structure_alignment_loss=structure_alignment_loss, frozen_gnn=frozen_gnn
         )
         
-        # Log metrics
+        # Log metrics (these are the epoch-level metrics that will be shown in plots)
         if config.logging.use_wandb:
             wandb.log({
                 'epoch': epoch,
@@ -649,18 +651,24 @@ def main():
                 'train_mlm_loss': train_mlm_loss,
                 'train_constraint_loss': train_constraint_loss,
                 'train_struct_align_loss': train_struct_align_loss,
+                'train_foldseek_loss': train_physical_loss,  # Physical loss corresponds to Foldseek-like task
+                'train_gnn_loss': train_latent_loss,  # Latent loss corresponds to GNN-like task
                 'val_loss': val_loss,
                 'val_mlm_loss': val_mlm_loss,
                 'val_constraint_loss': val_constraint_loss,
                 'val_struct_align_loss': val_struct_align_loss,
+                'val_foldseek_loss': val_physical_loss,
+                'val_gnn_loss': val_latent_loss,
             })
         
         print(f"Epoch {epoch+1} completed:")
         print(f"  Train Loss: {train_loss:.4f} (MLM: {train_mlm_loss:.4f}, Constraint: {train_constraint_loss:.4f}, StructAlign: {train_struct_align_loss:.4f})")
+        print(f"  Train Foldseek: {train_physical_loss:.4f}, GNN: {train_latent_loss:.4f}")
         print(f"  Val Loss: {val_loss:.4f} (MLM: {val_mlm_loss:.4f}, Constraint: {val_constraint_loss:.4f}, StructAlign: {val_struct_align_loss:.4f})")
+        print(f"  Val Foldseek: {val_physical_loss:.4f}, GNN: {val_latent_loss:.4f}")
         
         # Save model checkpoint periodically
-        if (epoch + 1) % 2 == 1:  # Save every 2 epochs
+        if (epoch + 1) % 2 == 0:  # Save every 2 epochs
             checkpoint_dir = os.path.join(config.training.output_dir, f"checkpoint_epoch_{epoch+1}")
             os.makedirs(checkpoint_dir, exist_ok=True)
             

@@ -555,7 +555,7 @@ def main():
     if not os.path.exists(processed_dataset_path):
         raise FileNotFoundError(
             f"Processed dataset not found at {processed_dataset_path}. "
-            f"Please run 'python scripts/process_data.py --raw_dir [path_to_pdb_files] --output_dir [path_to_save_processed_data] --create_efficient_dataset' "
+            f"Please run 'python data_pipeline/process_dataset.py --raw_dir [path_to_pdb_files] --output_dir [path_to_save_processed_data] --create_efficient_dataset' "
             f"to create the processed dataset first."
         )
     
