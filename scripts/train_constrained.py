@@ -1,5 +1,5 @@
 """
-Main training script for ESM2 with geometric constraints and LoRA
+Main training script for ESM2 with constrained geometric learning and LoRA
 """
 import os
 import sys
@@ -22,14 +22,13 @@ import argparse
 from omegaconf import OmegaConf
 
 from models.geotune_esm_model import load_esm_with_lora
-from utils.dihedral_utils import DihedralAngleConstraint
 from utils.constrained_dihedral_utils import ConstrainedDihedralAngleConstraint
 from utils.data_utils import ProteinStructureDataset, EfficientProteinDataset, collate_fn
 from utils.structure_alignment_utils import StructureAlignmentLoss, PretrainedGNNWrapper
 
 
 def parse_args():
-    parser = argparse.ArgumentParser(description="Train ESM2 with geometric constraints and LoRA")
+    parser = argparse.ArgumentParser(description="Train ESM2 with constrained geometric learning and LoRA")
     parser.add_argument("--config", type=str, default="configs/config.yaml", help="Path to config file")
     parser.add_argument("--data_path", type=str, required=True, help="Path to protein data directory")
     parser.add_argument("--model_name", type=str, default="facebook/esm2_t30_150M_UR50D", 
@@ -50,7 +49,7 @@ def parse_args():
 
 
 def train_epoch(model, dataloader, optimizer, scheduler, dihedral_constraints, device, config, structure_alignment_loss=None, frozen_gnn=None, scaler=None):
-    """Train for one epoch with dihedral angle constraints and structure alignment"""
+    """Train for one epoch with constrained dihedral angle learning"""
     model.train()
     total_loss = 0
     constraint_loss_total = 0
@@ -152,19 +151,21 @@ def train_epoch(model, dataloader, optimizer, scheduler, dihedral_constraints, d
             seq_logits = model.lm_head(masked_outputs['sequence_output'])
             mlm_loss = nn.CrossEntropyLoss(ignore_index=-100)(seq_logits.view(-1, seq_logits.size(-1)), labels.view(-1))
         
-        # Calculate dihedral angle constraint loss
+        # Calculate dihedral angle constraint loss using constrained learning
         # Add timing for constraint calculation to identify bottlenecks
         constraint_start_time = time.time()
 
         with torch.amp.autocast('cuda', enabled=use_amp):
-            dihedral_losses = dihedral_constraints(
+            # Get dihedral constraint results
+            dihedral_results = dihedral_constraints(
                 masked_outputs['sequence_output'],
                 n_coords,
                 ca_coords,
                 c_coords,
                 attention_mask
             )
-            total_dihedral_loss = dihedral_losses['total_dihedral_loss']
+            constraint_loss = dihedral_results['constraint_loss']
+            raw_constraint_loss = dihedral_results['raw_constraint_loss']
             constraint_time = time.time() - constraint_start_time
 
             # Calculate structure alignment loss if structural tokens are available
@@ -194,8 +195,14 @@ def train_epoch(model, dataloader, optimizer, scheduler, dihedral_constraints, d
                 )
                 struct_align_loss = struct_align_results['total_loss']
 
-            # Combine all losses
-            combined_loss = mlm_loss + config.model.constraint_weight * total_dihedral_loss + 0.1* struct_align_loss
+            # Compute the Lagrangian using the constrained learning approach
+            lagrangian = dihedral_constraints.compute_lagrangian(
+                primary_loss=mlm_loss,
+                constraint_loss=raw_constraint_loss  # Use raw constraint loss without weight scaling
+            )
+
+            # Combine all losses with structural alignment
+            combined_loss = lagrangian + 0.1 * struct_align_loss
 
             # Scale loss for gradient accumulation
             combined_loss = combined_loss / gradient_accumulation_steps
@@ -206,17 +213,20 @@ def train_epoch(model, dataloader, optimizer, scheduler, dihedral_constraints, d
             wandb.log({
                 'train_batch_loss': combined_loss.item() * gradient_accumulation_steps,
                 'train_batch_mlm_loss': mlm_loss.item(),
-                'train_batch_dihedral_loss': total_dihedral_loss.item(),
+                'train_batch_dihedral_loss': constraint_loss.item(),
                 'train_batch_struct_align_loss': struct_align_loss.item(),
-                'train_batch_phi_loss': dihedral_losses['phi_loss'].item(),
-                'train_batch_psi_loss': dihedral_losses['psi_loss'].item(),
+                'train_batch_phi_loss': dihedral_results['phi_loss'].item(),
+                'train_batch_psi_loss': dihedral_results['psi_loss'].item(),
+                'train_batch_lagrangian': lagrangian.item(),
+                'train_batch_slack_var': dihedral_constraints.s.item(),
+                'train_batch_dual_var': dihedral_constraints.lam.item(),
                 'learning_rate': scheduler.get_last_lr()[0],
                 'batch_idx': batch_idx,
                 'epoch_batch_idx': batch_idx,  # To track within epoch progress
                 'constraint_calc_time': constraint_time  # Time spent on constraint calculation
             })
         
-        # Backward pass with gradient accumulation and mixed precision
+        # Backward pass with gradient accumulation and mixed precision (for primal update)
         if scaler is not None:
             # Mixed precision backward
             scaler.scale(combined_loss).backward()
@@ -250,7 +260,7 @@ def train_epoch(model, dataloader, optimizer, scheduler, dihedral_constraints, d
                         'param_count_with_grad': param_count
                     })
 
-            # Optimizer step
+            # Primal optimizer step
             if scaler is not None:
                 scaler.step(optimizer)
                 scaler.update()
@@ -259,11 +269,18 @@ def train_epoch(model, dataloader, optimizer, scheduler, dihedral_constraints, d
 
             scheduler.step()
             optimizer.zero_grad()
-        
+            
+            # Dual optimizer step (for Lagrange multipliers)
+            # Calculate dual loss (negative of lagrangian for maximization)
+            with torch.no_grad():
+                # Project the slack and dual variables to be non-negative
+                dihedral_constraints.update_slack_variables()
+                dihedral_constraints.update_dual_variables()
+
         # Update progress bar
         # Note: combined_loss is scaled by gradient_accumulation_steps, so multiply back
         total_loss += combined_loss.item() * gradient_accumulation_steps
-        constraint_loss_total += total_dihedral_loss.item()
+        constraint_loss_total += constraint_loss.item()
         mlm_loss_total += mlm_loss.item()
         structure_alignment_loss_total += struct_align_loss.item()
         
@@ -273,8 +290,10 @@ def train_epoch(model, dataloader, optimizer, scheduler, dihedral_constraints, d
         progress_bar.set_postfix({
             'Loss': f'{combined_loss.item() * gradient_accumulation_steps:.4f}',
             'MLM': f'{mlm_loss.item():.4f}',
-            'Dihedral': f'{total_dihedral_loss.item():.4f}',
+            'Dihedral': f'{constraint_loss.item():.4f}',
             'StructAlign': f'{struct_align_loss.item():.4f}',
+            'Slack': f'{dihedral_constraints.s.item():.4f}',
+            'Lambda': f'{dihedral_constraints.lam.item():.4f}',
             'LR': f'{scheduler.get_last_lr()[0]:.2e}',
             'Time': f'{batch_time:.2f}s',
             'CnstTime': f'{constraint_time:.2f}s'
@@ -300,7 +319,7 @@ def train_epoch(model, dataloader, optimizer, scheduler, dihedral_constraints, d
 
 
 def validate(model, dataloader, dihedral_constraints, device, config, structure_alignment_loss=None, frozen_gnn=None):
-    """Validate the model with dihedral angle constraints and structure alignment"""
+    """Validate the model with constrained dihedral angle learning"""
     model.eval()
     total_loss = 0
     constraint_loss_total = 0
@@ -350,7 +369,7 @@ def validate(model, dataloader, dihedral_constraints, device, config, structure_
             mlm_loss = nn.CrossEntropyLoss(ignore_index=-100)(seq_logits.view(-1, seq_logits.size(-1)), labels.view(-1))
             
             # Calculate dihedral constraint loss
-            dihedral_losses = dihedral_constraints(
+            dihedral_results = dihedral_constraints(
                 masked_outputs['sequence_output'], 
                 n_coords, 
                 ca_coords, 
@@ -358,7 +377,7 @@ def validate(model, dataloader, dihedral_constraints, device, config, structure_
                 attention_mask
             )
             
-            total_dihedral_loss = dihedral_losses['total_dihedral_loss']
+            constraint_loss = dihedral_results['constraint_loss']
             
             # Calculate structure alignment loss if structural tokens are available
             struct_align_loss = torch.tensor(0.0, device=device)
@@ -387,11 +406,17 @@ def validate(model, dataloader, dihedral_constraints, device, config, structure_
                 )
                 struct_align_loss = struct_align_results['total_loss']
             
+            # Calculate Lagrangian for validation
+            lagrangian = dihedral_constraints.compute_lagrangian(
+                primary_loss=mlm_loss,
+                constraint_loss=dihedral_results['raw_constraint_loss']
+            )
+
             # !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
-            combined_loss = mlm_loss + config.model.constraint_weight * total_dihedral_loss + struct_align_loss
+            combined_loss = lagrangian + struct_align_loss
             
             total_loss += combined_loss.item()
-            constraint_loss_total += total_dihedral_loss.item()
+            constraint_loss_total += constraint_loss.item()
             mlm_loss_total += mlm_loss.item()
             structure_alignment_loss_total += struct_align_loss.item()
             
@@ -400,8 +425,9 @@ def validate(model, dataloader, dihedral_constraints, device, config, structure_
                 wandb.log({
                     'val_batch_loss': combined_loss.item(),
                     'val_batch_mlm_loss': mlm_loss.item(),
-                    'val_batch_dihedral_loss': total_dihedral_loss.item(),
+                    'val_batch_dihedral_loss': constraint_loss.item(),
                     'val_batch_struct_align_loss': struct_align_loss.item(),
+                    'val_batch_lagrangian': lagrangian.item(),
                     'val_batch': batch_idx
                 })
     
@@ -500,8 +526,8 @@ def main():
             'trainable_percentage': trainable_params/total_params*100
         })
     
-    # Initialize dihedral angle constraints
-    dihedral_constraints = DihedralAngleConstraint(
+    # Initialize constrained dihedral angle constraints
+    dihedral_constraints = ConstrainedDihedralAngleConstraint(
         constraint_weight=config.model.constraint_weight
     ).to(device)
     
@@ -595,20 +621,24 @@ def main():
         num_workers=1
     )
     
-    # Setup optimizer
-    optimizer = torch.optim.AdamW(
-        filter(lambda p: p.requires_grad, model.parameters()),  # Only optimize trainable params
+    # Setup primal optimizer - for model parameters and slack variables
+    primal_params = list(model.parameters()) + [dihedral_constraints.s]
+    primal_optimizer = torch.optim.AdamW(
+        filter(lambda p: p.requires_grad, primal_params),  # Only optimize trainable params
         lr=config.training.learning_rate,
         weight_decay=0.01,
         betas=(0.9, 0.98)  # Standard AdamW values
     )
     
+    # Setup dual optimizer - for Lagrange multipliers
+    dual_optimizer = torch.optim.SGD([dihedral_constraints.lam], lr=1e-3)  # Smaller learning rate for dual variables
+
     # Setup scheduler
     # Adjust total steps for gradient accumulation
     gradient_accumulation_steps = getattr(config.training, 'gradient_accumulation_steps', 1)
     total_steps = (len(train_loader) // gradient_accumulation_steps) * config.training.num_epochs
     scheduler = get_linear_schedule_with_warmup(
-        optimizer,
+        primal_optimizer,
         num_warmup_steps=config.training.warmup_steps,
         num_training_steps=total_steps
     )
@@ -631,7 +661,7 @@ def main():
 
         # Train
         train_loss, train_mlm_loss, train_constraint_loss, train_struct_align_loss = train_epoch(
-            model, train_loader, optimizer, scheduler, dihedral_constraints, device, config,
+            model, train_loader, primal_optimizer, scheduler, dihedral_constraints, device, config,
             structure_alignment_loss=structure_alignment_loss, frozen_gnn=frozen_gnn, scaler=scaler
         )
         
@@ -653,14 +683,17 @@ def main():
                 'val_mlm_loss': val_mlm_loss,
                 'val_constraint_loss': val_constraint_loss,
                 'val_struct_align_loss': val_struct_align_loss,
+                'slack_var': dihedral_constraints.s.item(),
+                'dual_var': dihedral_constraints.lam.item(),
             })
         
         print(f"Epoch {epoch+1} completed:")
         print(f"  Train Loss: {train_loss:.4f} (MLM: {train_mlm_loss:.4f}, Constraint: {train_constraint_loss:.4f}, StructAlign: {train_struct_align_loss:.4f})")
+        print(f"  Slack variable: {dihedral_constraints.s.item():.4f}, Dual variable: {dihedral_constraints.lam.item():.4f}")
         print(f"  Val Loss: {val_loss:.4f} (MLM: {val_mlm_loss:.4f}, Constraint: {val_constraint_loss:.4f}, StructAlign: {val_struct_align_loss:.4f})")
         
         # Save model checkpoint periodically
-        if (epoch + 1) % 2 == 1:  # Save every 2 epochs
+        if (epoch + 1) % 2 == 0:  # Save every 2 epochs
             checkpoint_dir = os.path.join(config.training.output_dir, f"checkpoint_epoch_{epoch+1}")
             os.makedirs(checkpoint_dir, exist_ok=True)
             
