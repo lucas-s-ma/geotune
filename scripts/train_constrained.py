@@ -55,6 +55,8 @@ def train_epoch(model, dataloader, optimizer, scheduler, dihedral_constraints, d
     constraint_loss_total = 0
     mlm_loss_total = 0
     structure_alignment_loss_total = 0
+    latent_loss_total = 0
+    physical_loss_total = 0
 
     # Get gradient accumulation steps
     gradient_accumulation_steps = getattr(config.training, 'gradient_accumulation_steps', 1)
@@ -194,6 +196,8 @@ def train_epoch(model, dataloader, optimizer, scheduler, dihedral_constraints, d
                     attention_mask=attention_mask
                 )
                 struct_align_loss = struct_align_results['total_loss']
+                latent_loss = struct_align_results['latent_loss']
+                physical_loss = struct_align_results['physical_loss']
 
             # Compute the Lagrangian using the constrained learning approach
             lagrangian = dihedral_constraints.compute_lagrangian(
@@ -215,6 +219,8 @@ def train_epoch(model, dataloader, optimizer, scheduler, dihedral_constraints, d
                 'train_batch_mlm_loss': mlm_loss.item(),
                 'train_batch_dihedral_loss': constraint_loss.item(),
                 'train_batch_struct_align_loss': struct_align_loss.item(),
+                'train_batch_latent_loss': latent_loss.item() if 'latent_loss' in locals() else 0.0,
+                'train_batch_physical_loss': physical_loss.item() if 'physical_loss' in locals() else 0.0,
                 'train_batch_phi_loss': dihedral_results['phi_loss'].item(),
                 'train_batch_psi_loss': dihedral_results['psi_loss'].item(),
                 'train_batch_lagrangian': lagrangian.item(),
@@ -283,6 +289,10 @@ def train_epoch(model, dataloader, optimizer, scheduler, dihedral_constraints, d
         constraint_loss_total += constraint_loss.item()
         mlm_loss_total += mlm_loss.item()
         structure_alignment_loss_total += struct_align_loss.item()
+        if 'latent_loss' in locals():
+            latent_loss_total += latent_loss.item()
+        if 'physical_loss' in locals():
+            physical_loss_total += physical_loss.item()
         
         # Calculate batch processing time
         batch_time = time.time() - batch_start_time
@@ -292,6 +302,8 @@ def train_epoch(model, dataloader, optimizer, scheduler, dihedral_constraints, d
             'MLM': f'{mlm_loss.item():.4f}',
             'Dihedral': f'{constraint_loss.item():.4f}',
             'StructAlign': f'{struct_align_loss.item():.4f}',
+            'Latent': f'{latent_loss.item() if "latent_loss" in locals() else 0.0:.4f}',
+            'Physical': f'{physical_loss.item() if "physical_loss" in locals() else 0.0:.4f}',
             'Slack': f'{dihedral_constraints.s.item():.4f}',
             'Lambda': f'{dihedral_constraints.lam.item():.4f}',
             'LR': f'{scheduler.get_last_lr()[0]:.2e}',
@@ -305,6 +317,8 @@ def train_epoch(model, dataloader, optimizer, scheduler, dihedral_constraints, d
     avg_constraint_loss = constraint_loss_total / len(dataloader)
     avg_mlm_loss = mlm_loss_total / len(dataloader)
     avg_struct_align_loss = structure_alignment_loss_total / len(dataloader)
+    avg_latent_loss = latent_loss_total / len(dataloader) if len(dataloader) > 0 else 0.0
+    avg_physical_loss = physical_loss_total / len(dataloader) if len(dataloader) > 0 else 0.0
     
     # Log epoch averages
     if config.logging.use_wandb:
@@ -312,10 +326,12 @@ def train_epoch(model, dataloader, optimizer, scheduler, dihedral_constraints, d
             'epoch_avg_loss': avg_loss,
             'epoch_avg_mlm_loss': avg_mlm_loss,
             'epoch_avg_dihedral_loss': avg_constraint_loss,
+            'epoch_avg_latent_loss': avg_latent_loss,
+            'epoch_avg_physical_loss': avg_physical_loss,
             'epoch_avg_struct_align_loss': avg_struct_align_loss,
         })
     
-    return avg_loss, avg_mlm_loss, avg_constraint_loss, avg_struct_align_loss
+    return avg_loss, avg_mlm_loss, avg_constraint_loss, avg_latent_loss, avg_physical_loss
 
 
 def validate(model, dataloader, dihedral_constraints, device, config, structure_alignment_loss=None, frozen_gnn=None):
@@ -325,6 +341,8 @@ def validate(model, dataloader, dihedral_constraints, device, config, structure_
     constraint_loss_total = 0
     mlm_loss_total = 0
     structure_alignment_loss_total = 0
+    latent_loss_total = 0
+    physical_loss_total = 0
     
     with torch.no_grad():
         for batch_idx, batch in enumerate(tqdm(dataloader, desc="Validating")):
@@ -405,6 +423,8 @@ def validate(model, dataloader, dihedral_constraints, device, config, structure_
                     attention_mask=attention_mask
                 )
                 struct_align_loss = struct_align_results['total_loss']
+                latent_loss = struct_align_results['latent_loss']
+                physical_loss = struct_align_results['physical_loss']
             
             # Calculate Lagrangian for validation
             lagrangian = dihedral_constraints.compute_lagrangian(
@@ -419,6 +439,10 @@ def validate(model, dataloader, dihedral_constraints, device, config, structure_
             constraint_loss_total += constraint_loss.item()
             mlm_loss_total += mlm_loss.item()
             structure_alignment_loss_total += struct_align_loss.item()
+            if 'latent_loss' in locals():
+                latent_loss_total += latent_loss.item()
+            if 'physical_loss' in locals():
+                physical_loss_total += physical_loss.item()
             
             # Log validation metrics to wandb
             if config.logging.use_wandb and batch_idx % 10 == 0:
@@ -427,6 +451,8 @@ def validate(model, dataloader, dihedral_constraints, device, config, structure_
                     'val_batch_mlm_loss': mlm_loss.item(),
                     'val_batch_dihedral_loss': constraint_loss.item(),
                     'val_batch_struct_align_loss': struct_align_loss.item(),
+                    'val_batch_latent_loss': latent_loss.item() if 'latent_loss' in locals() else 0.0,
+                    'val_batch_physical_loss': physical_loss.item() if 'physical_loss' in locals() else 0.0,
                     'val_batch_lagrangian': lagrangian.item(),
                     'val_batch': batch_idx
                 })
@@ -435,8 +461,10 @@ def validate(model, dataloader, dihedral_constraints, device, config, structure_
     avg_constraint_loss = constraint_loss_total / len(dataloader)
     avg_mlm_loss = mlm_loss_total / len(dataloader)
     avg_struct_align_loss = structure_alignment_loss_total / len(dataloader)
+    avg_latent_loss = latent_loss_total / len(dataloader) if len(dataloader) > 0 else 0.0
+    avg_physical_loss = physical_loss_total / len(dataloader) if len(dataloader) > 0 else 0.0
     
-    return avg_loss, avg_mlm_loss, avg_constraint_loss, avg_struct_align_loss
+    return avg_loss, avg_mlm_loss, avg_constraint_loss, avg_latent_loss, avg_physical_loss
 
 
 def main():
@@ -660,13 +688,13 @@ def main():
         print(f"\nEpoch {epoch+1}/{config.training.num_epochs}")
 
         # Train
-        train_loss, train_mlm_loss, train_constraint_loss, train_struct_align_loss = train_epoch(
+        train_loss, train_mlm_loss, train_constraint_loss, train_latent_loss, train_physical_loss = train_epoch(
             model, train_loader, primal_optimizer, scheduler, dihedral_constraints, device, config,
             structure_alignment_loss=structure_alignment_loss, frozen_gnn=frozen_gnn, scaler=scaler
         )
         
         # Validate
-        val_loss, val_mlm_loss, val_constraint_loss, val_struct_align_loss = validate(
+        val_loss, val_mlm_loss, val_constraint_loss, val_latent_loss, val_physical_loss = validate(
             model, val_loader, dihedral_constraints, device, config,
             structure_alignment_loss=structure_alignment_loss, frozen_gnn=frozen_gnn
         )
@@ -677,20 +705,22 @@ def main():
                 'epoch': epoch,
                 'train_loss': train_loss,
                 'train_mlm_loss': train_mlm_loss,
-                'train_constraint_loss': train_constraint_loss,
-                'train_struct_align_loss': train_struct_align_loss,
+                'train_dihedral_loss': train_constraint_loss,
+                'train_latent_loss': train_latent_loss,
+                'train_physical_loss': train_physical_loss,
                 'val_loss': val_loss,
                 'val_mlm_loss': val_mlm_loss,
-                'val_constraint_loss': val_constraint_loss,
-                'val_struct_align_loss': val_struct_align_loss,
+                'val_dihedral_loss': val_constraint_loss,
+                'val_latent_loss': val_latent_loss,
+                'val_physical_loss': val_physical_loss,
                 'slack_var': dihedral_constraints.s.item(),
                 'dual_var': dihedral_constraints.lam.item(),
             })
         
         print(f"Epoch {epoch+1} completed:")
-        print(f"  Train Loss: {train_loss:.4f} (MLM: {train_mlm_loss:.4f}, Constraint: {train_constraint_loss:.4f}, StructAlign: {train_struct_align_loss:.4f})")
+        print(f"  Train Loss: {train_loss:.4f} (MLM: {train_mlm_loss:.4f}, Dihedral: {train_constraint_loss:.4f}, Latent: {train_latent_loss:.4f}, Physical: {train_physical_loss:.4f})")
         print(f"  Slack variable: {dihedral_constraints.s.item():.4f}, Dual variable: {dihedral_constraints.lam.item():.4f}")
-        print(f"  Val Loss: {val_loss:.4f} (MLM: {val_mlm_loss:.4f}, Constraint: {val_constraint_loss:.4f}, StructAlign: {val_struct_align_loss:.4f})")
+        print(f"  Val Loss: {val_loss:.4f} (MLM: {val_mlm_loss:.4f}, Dihedral: {val_constraint_loss:.4f}, Latent: {val_latent_loss:.4f}, Physical: {val_physical_loss:.4f})")
         
         # Save model checkpoint periodically
         if (epoch + 1) % 2 == 0:  # Save every 2 epochs
