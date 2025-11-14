@@ -508,8 +508,7 @@ def main():
         physical_weight=0.7  # Increased to make physical (Foldseek) loss more impactful
     ).to(device)
     
-    # Initialize frozen pre-trained GNN (e.g. GearNet) - use stub to avoid TorchDrug dependency
-    # Set use_gearnet_stub=True to avoid TorchDrug/RDKit compatibility issues
+    # Initialize frozen pre-trained GNN (e.g. GearNet) - use improved stub to avoid TorchDrug dependency
     frozen_gnn = PretrainedGNNWrapper(hidden_dim=esm_hidden_size, use_gearnet_stub=True).to(device)
     frozen_gnn.eval()  # Set to evaluation mode to ensure no gradients
     

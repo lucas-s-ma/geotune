@@ -71,6 +71,8 @@ def generate_gearnet_embeddings_for_dataset(processed_dataset_path, output_dir, 
     if not os.path.exists(dataset_file):
         raise FileNotFoundError(f"Processed dataset not found at {dataset_file}")
 
+    # Handle potential NumPy compatibility issues when loading
+    import numpy.core.multiarray
     with open(dataset_file, 'rb') as f:
         proteins = pickle.load(f)
 
