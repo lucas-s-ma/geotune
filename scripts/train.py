@@ -174,19 +174,13 @@ def train_epoch(model, dataloader, optimizer, scheduler, dihedral_constraints, d
             # Scale loss for gradient accumulation
             combined_loss = combined_loss / gradient_accumulation_steps
         
-        # Log loss components immediately to wandb for debugging
-        # Note: combined_loss is scaled by gradient_accumulation_steps, so multiply back for logging
+
+        
+        # Log loss components at batch level for GNN and Foldseek
         if config.logging.use_wandb:
             wandb.log({
-                'train_batch_loss': combined_loss.item() * gradient_accumulation_steps,
-                'train_batch_mlm_loss': mlm_loss.item(),
-                'train_batch_dihedral_loss': total_dihedral_loss.item(),
-                'train_batch_struct_align_loss': struct_align_loss.item(),
-                'train_batch_foldseek_loss': physical_loss.item(),  # Physical corresponds to structural token prediction
-                'train_batch_gnn_loss': latent_loss.item(),  # Latent corresponds to contrastive GNN learning
-                'train_batch_phi_loss': dihedral_losses['phi_loss'].item(),
-                'train_batch_psi_loss': dihedral_losses['psi_loss'].item(),
-                'learning_rate': scheduler.get_last_lr()[0],
+                'train_batch_foldseek_loss': physical_loss.item(),
+                'train_batch_gnn_loss': latent_loss.item(),
             })
         
         # Backward pass with gradient accumulation and mixed precision
@@ -381,13 +375,9 @@ def validate(model, dataloader, dihedral_constraints, device, config, structure_
             struct_align_physical_loss += physical_loss.item()
             num_batches += 1  # Increment batch counter
             
-            # Log validation metrics to wandb
+            # Log validation batch metrics for GNN and Foldseek losses
             if config.logging.use_wandb and batch_idx % 10 == 0:
                 wandb.log({
-                    'val_batch_loss': combined_loss.item(),
-                    'val_batch_mlm_loss': mlm_loss.item(),
-                    'val_batch_dihedral_loss': total_dihedral_loss.item(),
-                    'val_batch_struct_align_loss': struct_align_loss.item(),
                     'val_batch_foldseek_loss': physical_loss.item(),
                     'val_batch_gnn_loss': latent_loss.item(),
                     'val_batch': batch_idx
