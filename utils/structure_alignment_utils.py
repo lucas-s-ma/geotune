@@ -154,21 +154,23 @@ class StructureAlignmentLoss(nn.Module):
         logits_flat = logits.view(-1, self.num_structural_classes)  # (batch_size * seq_len, num_classes)
         tokens_flat = structure_tokens.view(-1)  # (batch_size * seq_len,)
 
-        # CRITICAL: Validate and clamp structural tokens to valid range [0, num_classes-1]
-        # This handles tokens generated with old buggy code that mapped unknown chars to a value outside of the class range
-        invalid_mask = (tokens_flat >= self.num_structural_classes) | (tokens_flat < 0)
-        if invalid_mask.any():
-            num_invalid = invalid_mask.sum().item()
-            print(f"Warning: Found {num_invalid} invalid structural tokens (>= {self.num_structural_classes} or < 0). Clamping to valid range.")
-            # Clamp invalid tokens to the last class index (unknown token)
-            tokens_flat = torch.clamp(tokens_flat, min=0, max=self.num_structural_classes - 1)
-
         # Apply attention mask by setting ignored positions to ignore_index
         if attention_mask is not None:
             mask_flat = attention_mask.view(-1)  # (batch_size * seq_len,)
+            # Set non-masked positions to -100 (ignore index) to avoid affecting loss
             tokens_flat = torch.where(mask_flat.bool(), tokens_flat, torch.tensor(-100, device=tokens_flat.device))
 
-        # Calculate cross-entropy loss
+        # Validate structural tokens are in the valid range [0, num_classes-1]
+        # Filter out invalid tokens by replacing them with -100 (ignore index)
+        invalid_mask = (tokens_flat >= self.num_structural_classes) | (tokens_flat < 0) | (tokens_flat != tokens_flat)  # also check for NaN
+        if invalid_mask.any():
+            num_invalid = invalid_mask.sum().item()
+            if num_invalid > 0:
+                print(f"Warning: Found {num_invalid} invalid structural tokens (>= {self.num_structural_classes} or < 0 or NaN). Setting to ignore_index (-100).")
+            # Set invalid tokens to -100 so they are ignored in loss calculation
+            tokens_flat = torch.where(invalid_mask, torch.tensor(-100, device=tokens_flat.device), tokens_flat)
+
+        # Calculate cross-entropy loss - invalid tokens with -100 will be ignored
         physical_loss = self.ce_loss(logits_flat, tokens_flat)
 
         return physical_loss

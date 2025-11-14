@@ -169,7 +169,7 @@ def train_epoch(model, dataloader, optimizer, scheduler, dihedral_constraints, d
                 physical_loss = struct_align_results.get('physical_loss', torch.tensor(0.0, device=device))
 
             # Combine all losses
-            combined_loss = mlm_loss + config.model.constraint_weight * total_dihedral_loss + 0.1 * struct_align_loss
+            combined_loss = mlm_loss + config.model.constraint_weight * total_dihedral_loss + struct_align_loss
 
             # Scale loss for gradient accumulation
             combined_loss = combined_loss / gradient_accumulation_steps
@@ -504,8 +504,8 @@ def main():
         hidden_dim=esm_hidden_size,
         num_structural_classes=21,  # 21 structural classes for Foldseek (20 + 'X')
         shared_projection_dim=512,
-        latent_weight=0.5,
-        physical_weight=0.5
+        latent_weight=0.3,  # Reduced to give more weight to physical loss
+        physical_weight=0.7  # Increased to make physical (Foldseek) loss more impactful
     ).to(device)
     
     # Initialize frozen pre-trained GNN (e.g. GearNet) - use stub to avoid TorchDrug dependency
