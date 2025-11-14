@@ -154,13 +154,7 @@ class StructureAlignmentLoss(nn.Module):
         logits_flat = logits.view(-1, self.num_structural_classes)  # (batch_size * seq_len, num_classes)
         tokens_flat = structure_tokens.view(-1)  # (batch_size * seq_len,)
 
-        # Apply attention mask by setting ignored positions to ignore_index
-        if attention_mask is not None:
-            mask_flat = attention_mask.view(-1)  # (batch_size * seq_len,)
-            # Set non-masked positions to -100 (ignore index) to avoid affecting loss
-            tokens_flat = torch.where(mask_flat.bool(), tokens_flat, torch.tensor(-100, device=tokens_flat.device))
-
-        # Validate structural tokens are in the valid range [0, num_classes-1]
+        # Validate structural tokens are in the valid range [0, num_classes-1] BEFORE applying attention mask
         # Filter out invalid tokens by replacing them with -100 (ignore index)
         invalid_mask = (tokens_flat >= self.num_structural_classes) | (tokens_flat < 0) | (tokens_flat != tokens_flat)  # also check for NaN
         if invalid_mask.any():
@@ -170,7 +164,14 @@ class StructureAlignmentLoss(nn.Module):
             # Set invalid tokens to -100 so they are ignored in loss calculation
             tokens_flat = torch.where(invalid_mask, torch.tensor(-100, device=tokens_flat.device), tokens_flat)
 
-        # Calculate cross-entropy loss - invalid tokens with -100 will be ignored
+        # Apply attention mask by setting ignored positions to ignore_index (-100)
+        if attention_mask is not None:
+            mask_flat = attention_mask.view(-1)  # (batch_size * seq_len,)
+            # Only mask tokens that are valid (not already marked as -100)
+            # This ensures attention-masked positions are set to -100 to be ignored
+            tokens_flat = torch.where(mask_flat.bool(), tokens_flat, torch.tensor(-100, device=tokens_flat.device))
+
+        # Calculate cross-entropy loss - tokens with -100 will be ignored
         physical_loss = self.ce_loss(logits_flat, tokens_flat)
 
         return physical_loss
