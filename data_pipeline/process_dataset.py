@@ -119,17 +119,17 @@ def align_structural_tokens_to_sequence(pdb_file_path, foldseek_tokens):
     if pdb_data is None:
         print(f"Could not extract sequence from {pdb_file_path}")
         return None
-    
+
     original_seq_len = len(pdb_data['sequence'])
-    
+
     if foldseek_tokens is None:
         print(f"Foldseek tokens are None for {pdb_file_path}")
         return None
-    
+
     # Align tokens to sequence length
     if len(foldseek_tokens) != original_seq_len:
         print(f"Length mismatch for {pdb_data['id']}: seq={original_seq_len}, tokens={len(foldseek_tokens)}")
-        
+
         # Adjust tokens to match sequence length
         if len(foldseek_tokens) > original_seq_len:
             # Truncate tokens to sequence length
@@ -143,7 +143,7 @@ def align_structural_tokens_to_sequence(pdb_file_path, foldseek_tokens):
     else:
         # Lengths match, return as is
         aligned_tokens = foldseek_tokens
-    
+
     return aligned_tokens
 
 
@@ -193,11 +193,11 @@ def create_efficient_dataset(raw_dir, output_dir, include_structural_tokens=True
                 try:
                     # Generate original tokens
                     original_tokens = generate_foldseek_tokens(pdb_file)
-                    
+
                     if original_tokens is not None and len(original_tokens) > 0:
                         # Align tokens with sequence extraction to ensure proper length
                         aligned_tokens = align_structural_tokens_to_sequence(pdb_file, original_tokens)
-                        
+
                         if aligned_tokens is not None and len(aligned_tokens) > 0:
                             structural_tokens_list.append({
                                 'protein_id': pdb_name,
@@ -432,7 +432,7 @@ def main():
 
         # Import here to avoid issues if the dependencies are not available
         try:
-            from scripts.generate_gearnet_embeddings import generate_gearnet_embeddings_for_dataset
+            from data_pipeline.generate_gearnet_embeddings import generate_gearnet_embeddings_for_dataset
 
             # Generate GearNet embeddings for the processed dataset
             embeddings_output_dir = os.path.join(project_root, "embeddings")
