@@ -73,7 +73,6 @@ def generate_gearnet_embeddings_for_dataset(processed_dataset_path, output_dir, 
 
     # Handle potential NumPy compatibility issues when loading
     # This is a common issue when pickle files were created with different NumPy versions
-    import numpy as np
     try:
         with open(dataset_file, 'rb') as f:
             proteins = pickle.load(f)
