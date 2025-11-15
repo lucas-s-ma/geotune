@@ -46,10 +46,10 @@ def generate_gearnet_embeddings_for_protein(n_coords, ca_coords, c_coords, model
 
     # Remove batch dimension and convert to numpy
     embeddings = embeddings.squeeze(0).cpu().numpy()  # (seq_len, hidden_dim)
-    
+
     # Clean up GPU memory
     del n_coords, ca_coords, c_coords
-    
+
     return embeddings
 
 
@@ -72,9 +72,38 @@ def generate_gearnet_embeddings_for_dataset(processed_dataset_path, output_dir, 
         raise FileNotFoundError(f"Processed dataset not found at {dataset_file}")
 
     # Handle potential NumPy compatibility issues when loading
-    import numpy.core.multiarray
-    with open(dataset_file, 'rb') as f:
-        proteins = pickle.load(f)
+    # This is a common issue when pickle files were created with different NumPy versions
+    import numpy as np
+    try:
+        with open(dataset_file, 'rb') as f:
+            proteins = pickle.load(f)
+    except AttributeError as e:
+        if "'numpy.ndarray' object has no attribute" in str(e) or "it's not the same object as numpy.ndarray" in str(e):
+            # Handle NumPy version mismatch by temporarily modifying the import path
+            print(f"NumPy compatibility issue detected: {e}")
+            print("Attempting to resolve by using numpy.core.multiarray...")
+
+            # Temporarily add numpy.core.multiarray to handle the old format
+            import numpy.core.multiarray
+            import sys
+
+            # Ensure numpy.ndarray exists in the expected location
+            if not hasattr(numpy.core.multiarray, 'ndarray'):
+                numpy.core.multiarray.ndarray = numpy.ndarray
+
+            with open(dataset_file, 'rb') as f:
+                # Use pickle with a custom Unpickler to handle NumPy compatibility
+                class NumpyUnpickler(pickle.Unpickler):
+                    def find_class(self, module, name):
+                        if module == 'numpy.core.multiarray' and name == 'ndarray':
+                            return numpy.ndarray
+                        if module == 'numpy' and name == 'ndarray':
+                            return numpy.ndarray
+                        return super().find_class(module, name)
+
+                proteins = NumpyUnpickler(f).load()
+        else:
+            raise
 
     print(f"Loaded {len(proteins)} proteins from dataset")
 
@@ -95,7 +124,7 @@ def generate_gearnet_embeddings_for_dataset(processed_dataset_path, output_dir, 
     # Process proteins in batches to manage memory
     processed_count = 0
     failed_count = 0
-    
+
     for i, protein in enumerate(tqdm(proteins, desc="Generating GearNet embeddings")):
         protein_id = protein['id']
 
@@ -119,7 +148,7 @@ def generate_gearnet_embeddings_for_dataset(processed_dataset_path, output_dir, 
                 }, f)
 
             processed_count += 1
-            
+
             # Clear memory periodically
             if processed_count % batch_size == 0:
                 # Force garbage collection
@@ -137,7 +166,7 @@ def generate_gearnet_embeddings_for_dataset(processed_dataset_path, output_dir, 
 
     print(f"Completed! Generated embeddings for {processed_count} proteins")
     print(f"Failed to process {failed_count} proteins")
-    
+
     # Clean up
     del model
     gc.collect()
