@@ -12,6 +12,7 @@ from pathlib import Path
 import pickle
 from tqdm import tqdm
 import argparse
+import tempfile
 import gc  # garbage collection
 
 # Add the project root directory to the Python path
@@ -19,47 +20,49 @@ project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root))
 
 from utils.structure_alignment_utils import PretrainedGNNWrapper
+from torchdrug.data import Protein
 
 
-def generate_gearnet_embeddings_for_protein(n_coords, ca_coords, c_coords, model, device):
+def clean_pdb_file(pdb_path, cleaned_pdb_path):
+    """
+    Create a cleaned version of a PDB file by keeping only ATOM records.
+    This helps to remove HETATM records that can cause parsing errors.
+    """
+    with open(pdb_path, 'r') as f_in, open(cleaned_pdb_path, 'w') as f_out:
+        for line in f_in:
+            if line.startswith('ATOM'):
+                f_out.write(line)
+
+
+def generate_gearnet_embeddings_for_protein(protein_graph, model):
     """
     Generate GearNet embeddings for a single protein
 
     Args:
-        n_coords: (seq_len, 3) N atom coordinates
-        ca_coords: (seq_len, 3) CA atom coordinates
-        c_coords: (seq_len, 3) C atom coordinates
+        protein_graph (torchdrug.data.Protein): A protein graph object from TorchDrug.
         model: PretrainedGNNWrapper instance
-        device: torch.device to move tensors to
 
     Returns:
         embeddings: (seq_len, hidden_dim) structural embeddings
     """
-    # Add batch dimension and move to device
-    n_coords = torch.tensor(n_coords, dtype=torch.float32).unsqueeze(0).to(device)
-    ca_coords = torch.tensor(ca_coords, dtype=torch.float32).unsqueeze(0).to(device)
-    c_coords = torch.tensor(c_coords, dtype=torch.float32).unsqueeze(0).to(device)
-
     # Generate embeddings using the GearNet model
     with torch.no_grad():
-        embeddings = model(n_coords, ca_coords, c_coords)
+        embeddings = model(protein_graph)
 
-    # Remove batch dimension and convert to numpy
-    embeddings = embeddings.squeeze(0).cpu().numpy()  # (seq_len, hidden_dim)
-
-    # Clean up GPU memory
-    del n_coords, ca_coords, c_coords
+    # Convert to numpy
+    embeddings = embeddings.cpu().numpy()  # (seq_len, hidden_dim)
 
     return embeddings
 
 
-def generate_gearnet_embeddings_for_dataset(processed_dataset_path, output_dir, model_path=None, hidden_dim=512, batch_size=10):
+def generate_gearnet_embeddings_for_dataset(processed_dataset_path, output_dir, raw_pdb_dir, model_path=None, hidden_dim=512, batch_size=10):
     """
     Generate GearNet embeddings for an entire processed dataset
 
     Args:
         processed_dataset_path: Path to the processed dataset directory containing processed_dataset.pkl
         output_dir: Directory to save GearNet embeddings
+        raw_pdb_dir: Directory containing raw PDB files
         model_path: Path to pre-trained model (uses proper GearNet implementation if available)
         hidden_dim: Hidden dimension for the model
         batch_size: Number of proteins to process before clearing memory
@@ -111,8 +114,7 @@ def generate_gearnet_embeddings_for_dataset(processed_dataset_path, output_dir, 
     model = PretrainedGNNWrapper(
         model_path=model_path,
         hidden_dim=hidden_dim,
-        freeze=True,
-        use_gearnet_stub=False  # Try to use proper implementation first
+        freeze=True
     ).to(device)
 
     model.eval()  # Set to evaluation mode
@@ -124,29 +126,43 @@ def generate_gearnet_embeddings_for_dataset(processed_dataset_path, output_dir, 
     processed_count = 0
     failed_count = 0
 
-    for i, protein in enumerate(tqdm(proteins, desc="Generating GearNet embeddings")):
-        protein_id = protein['id']
+    for i, protein_info in enumerate(tqdm(proteins, desc="Generating GearNet embeddings")):
+        protein_id = protein_info['id']
+        pdb_file = os.path.join(raw_pdb_dir, f"{protein_id}.pdb")
+
+        if not os.path.exists(pdb_file):
+            print(f"PDB file not found for protein {protein_id} at {pdb_file}")
+            failed_count += 1
+            continue
 
         try:
-            n_coords = protein['n_coords']  # (seq_len, 3)
-            ca_coords = protein['ca_coords']  # (seq_len, 3)
-            c_coords = protein['c_coords']  # (seq_len, 3)
+            with tempfile.NamedTemporaryFile(mode='w', suffix='.pdb', delete=True) as tmp_pdb:
+                # Clean the PDB file by removing HETATM records
+                clean_pdb_file(pdb_file, tmp_pdb.name)
 
-            # Generate embeddings for this protein
-            embeddings = generate_gearnet_embeddings_for_protein(
-                n_coords, ca_coords, c_coords, model, device
-            )
+                # Create a torchdrug.data.Protein object from the cleaned PDB file
+                protein_graph = Protein.from_pdb(tmp_pdb.name, atom_feature="position", bond_feature="length", residue_feature="symbol")
+                
+                if protein_graph is None:
+                    raise ValueError("Protein graph could not be created from PDB, it might be empty after cleaning.")
 
-            # Save individual embedding file
-            output_file = os.path.join(output_dir, f"{protein_id}_gearnet_embeddings.pkl")
-            with open(output_file, 'wb') as f:
-                pickle.dump({
-                    'protein_id': protein_id,
-                    'embeddings': embeddings,
-                    'sequence_length': embeddings.shape[0]
-                }, f)
+                protein_graph = protein_graph.to(device)
 
-            processed_count += 1
+                # Generate embeddings for this protein
+                embeddings = generate_gearnet_embeddings_for_protein(
+                    protein_graph, model
+                )
+
+                # Save individual embedding file
+                output_file = os.path.join(output_dir, f"{protein_id}_gearnet_embeddings.pkl")
+                with open(output_file, 'wb') as f:
+                    pickle.dump({
+                        'protein_id': protein_id,
+                        'embeddings': embeddings,
+                        'sequence_length': embeddings.shape[0]
+                    }, f)
+
+                processed_count += 1
 
             # Clear memory periodically
             if processed_count % batch_size == 0:
@@ -175,12 +191,15 @@ def generate_gearnet_embeddings_for_dataset(processed_dataset_path, output_dir, 
     return processed_count, failed_count
 
 
+
 def main():
     parser = argparse.ArgumentParser(description="Generate GearNet embeddings for proteins")
     parser.add_argument("--processed_dataset_path", type=str, required=True,
                         help="Path to processed dataset directory containing processed_dataset.pkl")
     parser.add_argument("--output_dir", type=str, required=True,
                         help="Directory to save generated GearNet embeddings")
+    parser.add_argument("--raw_pdb_dir", type=str, required=True,
+                        help="Directory containing raw PDB files")
     parser.add_argument("--model_path", type=str, default=None,
                         help="Path to pre-trained model (optional)")
     parser.add_argument("--hidden_dim", type=int, default=512,
@@ -198,6 +217,7 @@ def main():
     processed_count, failed_count = generate_gearnet_embeddings_for_dataset(
         args.processed_dataset_path,
         args.output_dir,
+        args.raw_pdb_dir,
         args.model_path,
         args.hidden_dim,
         args.batch_size

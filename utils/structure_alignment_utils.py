@@ -177,121 +177,70 @@ class StructureAlignmentLoss(nn.Module):
         return physical_loss
 
 
+
+from torchdrug.models import GearNet
+from torchdrug.data import Protein
+
+
 class PretrainedGNNWrapper(nn.Module):
     """
     Wrapper for a frozen, pre-trained protein Graph Neural Network (e.g. GearNet)
     This module is frozen during training to provide structural embeddings
-    Can load from local path or HuggingFace hub if available
     """
-    def __init__(self, model_path=None, hidden_dim=512, freeze=True, use_gearnet_stub=True):
+    def __init__(self, model_path=None, hidden_dim=512, freeze=True):
         """
         Args:
-            model_path: Path to pre-trained model (not currently available for GearNet)
+            model_path: Path to pre-trained model (e.g. gearnet_edge.pth)
             hidden_dim: Hidden dimension for the model
             freeze: Whether to freeze the model parameters
-            use_gearnet_stub: Whether to use the stub implementation (avoids TorchDrug import)
         """
         super().__init__()
 
-        # Always use the improved stub implementation to avoid dependency issues
-        self.backbone = self._create_stub_gearnet(hidden_dim, freeze)
-        print("Using improved stub implementation for pre-trained GNN (avoiding TorchDrug dependency)")
-    
-    def _create_stub_gearnet(self, hidden_dim, freeze):
-        """Create an improved stub GearNet implementation"""
-        return ImprovedStubGearNetWrapper(hidden_dim=hidden_dim, freeze=freeze)
-    
-    def forward(self, n_coords, ca_coords, c_coords):
-        """
-        Forward pass through the frozen GNN to get structural embeddings
-        
-        Args:
-            n_coords: (batch_size, seq_len, 3) N atom coordinates
-            ca_coords: (batch_size, seq_len, 3) CA atom coordinates
-            c_coords: (batch_size, seq_len, 3) C atom coordinates
-        
-        Returns:
-            pGNN_embeddings: (batch_size, seq_len, hidden_dim) structural embeddings
-        """
-        return self.backbone(n_coords, ca_coords, c_coords)
-
-
-class ImprovedStubGearNetWrapper(nn.Module):
-    """
-    More sophisticated stub implementation that mimics GearNet-like functionality
-    """
-    def __init__(self, hidden_dim=512, num_layers=4, freeze=True):
-        """
-        Initialize a more sophisticated GNN that processes protein structures
-        
-        Args:
-            hidden_dim: Hidden dimension for the GNN (should match ESM hidden dim)
-            num_layers: Number of GNN layers
-            freeze: Whether to freeze the model parameters during training
-        """
-        super().__init__()
-        
-        self.hidden_dim = hidden_dim
-        
-        # Create features from coordinates (N, CA, C)
-        input_dim = 9  # 3 coords each for N, CA, C atoms = 9
-        
-        # Use multiple geometric features instead of just coordinates
-        self.initial_projection = nn.Linear(input_dim, hidden_dim)
-        
-        # Create edge-like features (distance, direction) between residues
-        # This mimics how GearNet processes structural information
-        self.geometric_processor = nn.Sequential(
-            nn.Linear(hidden_dim, hidden_dim),
-            nn.ReLU(),
-            nn.LayerNorm(hidden_dim),
-            nn.Dropout(0.1)
+        # Use the full GearNet implementation
+        self.backbone = GearNet(
+            input_dim=21,  # 20 standard amino acids + 1 unknown
+            hidden_dims=[hidden_dim, hidden_dim, hidden_dim],
+            num_relation=7,  # Default for GearNet
+            edge_input_dim=None,
+            num_angle_bin=None,
+            batch_norm=True,
+            concat_hidden=True
         )
-        
-        # GNN layers with self-attention to process structural relationships
-        self.gnn_layers = nn.ModuleList()
-        for _ in range(num_layers):
-            # Multi-head attention layer to capture spatial relationships
-            self.gnn_layers.append(
-                nn.TransformerEncoderLayer(
-                    d_model=hidden_dim,
-                    nhead=8,
-                    dim_feedforward=hidden_dim * 2,
-                    dropout=0.1,
-                    batch_first=True
-                )
-            )
-        
+        print("Using full GearNet implementation from TorchDrug")
+
+        if model_path:
+            try:
+                state_dict = torch.load(model_path, map_location=torch.device('cpu'))['model']
+                self.backbone.load_state_dict(state_dict)
+                print(f"Loaded pre-trained GearNet weights from {model_path}")
+            except FileNotFoundError:
+                print(f"Warning: Pre-trained GearNet model not found at {model_path}. Using random initialization.")
+            except Exception as e:
+                print(f"Error loading pre-trained GearNet model: {e}. Using random initialization.")
+
         if freeze:
             for param in self.parameters():
                 param.requires_grad = False
-    
-    def forward(self, n_coords, ca_coords, c_coords):
+
+    def forward(self, protein_graph):
         """
-        Forward pass through the GNN to get structural embeddings
-        Processes geometric relationships between amino acids
-        
+        Forward pass through the frozen GNN to get structural embeddings.
+
         Args:
-            n_coords: (batch_size, seq_len, 3) N atom coordinates
-            ca_coords: (batch_size, seq_len, 3) CA atom coordinates
-            c_coords: (batch_size, seq_len, 3) C atom coordinates
-        
+            protein_graph (torchdrug.data.Protein): A protein graph object from TorchDrug.
+                This can be a single graph or a batch of graphs.
+
         Returns:
-            embeddings: (batch_size, seq_len, hidden_dim) structural embeddings
+            pGNN_embeddings (torch.Tensor): (num_residues, hidden_dim) structural embeddings
+                for all residues in the batch.
         """
-        batch_size, seq_len, _ = ca_coords.shape
+        # The input to GearNet should be the graph and its residue features
+        residue_features = protein_graph.residue_feature.float()
         
-        # Combine coordinates into input features (batch_size, seq_len, 9)
-        combined_coords = torch.cat([n_coords, ca_coords, c_coords], dim=-1)
+        # The GearNet model returns a dictionary of features
+        features = self.backbone(protein_graph, residue_features)
         
-        # Project initial features
-        x = self.initial_projection(combined_coords)  # (batch_size, seq_len, hidden_dim)
-        
-        # Process through geometric processor
-        x = self.geometric_processor(x)
-        
-        # Process through GNN layers to capture structural relationships
-        for gnn_layer in self.gnn_layers:
-            x = gnn_layer(x)
-        
-        return x  # (batch_size, seq_len, hidden_dim)
+        # We want the node-level (residue-level) embeddings
+        pgnn_embeddings = features['node_feature']
+
+        return pgnn_embeddings

@@ -217,8 +217,17 @@ def create_efficient_dataset(raw_dir, output_dir, include_structural_tokens=True
     os.makedirs(output_dir, exist_ok=True)
     dataset_file = os.path.join(output_dir, "processed_dataset.pkl")
 
+    # Sanitize numpy arrays before saving to avoid pickle errors
+    sanitized_proteins = []
+    for protein in temp_dataset.proteins:
+        sanitized_protein = protein.copy()
+        for key in ['n_coords', 'ca_coords', 'c_coords']:
+            if key in sanitized_protein and isinstance(sanitized_protein[key], np.ndarray):
+                sanitized_protein[key] = np.array(sanitized_protein[key].tolist(), dtype=np.float32)
+        sanitized_proteins.append(sanitized_protein)
+
     with open(dataset_file, 'wb') as f:
-        pickle.dump(temp_dataset.proteins, f)
+        pickle.dump(sanitized_proteins, f)
 
     print(f"Saved processed dataset to {dataset_file} with {len(temp_dataset.proteins)} proteins")
 
@@ -438,7 +447,8 @@ def main():
             embeddings_output_dir = os.path.join(project_root, "embeddings")
             generate_gearnet_embeddings_for_dataset(
                 processed_dataset_path=args.output_dir,
-                output_dir=embeddings_output_dir
+                output_dir=embeddings_output_dir,
+                raw_pdb_dir=args.raw_dir
             )
             print(f"GearNet embeddings saved to {embeddings_output_dir}")
         except ImportError as e:
