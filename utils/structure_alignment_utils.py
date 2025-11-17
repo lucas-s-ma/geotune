@@ -170,14 +170,14 @@ class StructureAlignmentLoss(nn.Module):
             if attention_mask is not None:
                 print(f"  First sample attention mask (first 50): {attention_mask[0][:min(50, len(attention_mask[0]))].tolist()}")
 
-        # CRITICAL: Validate and clamp structural tokens to valid range [0, num_classes-1]
+        # CRITICAL: Validate and remove invalid structural tokens to avoid corrupting the loss calculation
         # This handles tokens generated with old buggy code that mapped unknown chars to a value outside of the class range
         invalid_mask = (tokens_flat >= self.num_structural_classes) | (tokens_flat < 0)
         if invalid_mask.any():
             num_invalid = invalid_mask.sum().item()
-            print(f"Warning: Found {num_invalid} invalid structural tokens (>= {self.num_structural_classes} or < 0). Clamping to valid range.")
-            # Clamp invalid tokens to the last class index (unknown token)
-            tokens_flat = torch.clamp(tokens_flat, min=0, max=self.num_structural_classes - 1)
+            print(f"Warning: Found {num_invalid} invalid structural tokens (>= {self.num_structural_classes} or < 0). Ignoring these positions.")
+            # Set invalid tokens to ignore_index so they don't contribute to the loss
+            tokens_flat = torch.where(invalid_mask, torch.tensor(-100, device=tokens_flat.device), tokens_flat)
 
         # Apply attention mask by setting ignored positions to ignore_index
         if attention_mask is not None:

@@ -20,6 +20,7 @@ from tqdm import tqdm
 import wandb
 import argparse
 from omegaconf import OmegaConf
+import pickle
 
 from models.geotune_esm_model import load_esm_with_lora
 from utils.dihedral_utils import DihedralAngleConstraint
@@ -537,16 +538,34 @@ def main():
     embeddings_path = os.path.join(config.data.data_path, "embeddings")
     embeddings_exist = os.path.exists(embeddings_path)
 
-    # IMPORTANT: Disable loading pre-computed embeddings if they have wrong dimension
+    # IMPORTANT: Check if pre-computed embeddings have the correct dimension
     # Pre-computed embeddings must match ESM model's hidden_dim
     # ESM2-150M uses 640, ESM2-35M uses 480, etc.
-    # If embeddings were pre-computed with different hidden_dim, regenerate them or disable
-    load_embeddings = False  # Generate on-the-fly with correct dimension
+    load_embeddings = False  # Default to False
     if embeddings_exist:
-        print(f"Pre-computed embeddings found but disabled (may have wrong dimension)")
-        print(f"Embeddings will be generated on-the-fly with hidden_dim={esm_hidden_size}")
+        # Check if any embedding files exist and have correct dimensions
+        embedding_files = [f for f in os.listdir(embeddings_path) if f.endswith('_gearnet_embeddings.pkl')]
+        if embedding_files:
+            # Load a sample embedding to check dimensions
+            sample_embedding_file = os.path.join(embeddings_path, embedding_files[0])
+            try:
+                with open(sample_embedding_file, 'rb') as f:
+                    sample_data = pickle.load(f)
+                    sample_embeddings = sample_data['embeddings']
+                    if len(sample_embeddings.shape) >= 2 and sample_embeddings.shape[-1] == esm_hidden_size:
+                        load_embeddings = True
+                        print(f"Pre-computed embeddings found with correct dimension {esm_hidden_size}, will load them.")
+                    else:
+                        print(f"Pre-computed embeddings have wrong dimension {sample_embeddings.shape[-1]}, expected {esm_hidden_size}.")
+                        print(f"Embeddings will be generated on-the-fly with hidden_dim={esm_hidden_size}")
+            except Exception as e:
+                print(f"Error checking pre-computed embeddings: {e}")
+                print(f"Embeddings will be generated on-the-fly with hidden_dim={esm_hidden_size}")
+        else:
+            print(f"Pre-computed embeddings directory exists but no embedding files found.")
+            print(f"Embeddings will be generated on-the-fly with hidden_dim={esm_hidden_size}")
     else:
-        print(f"Pre-computed embeddings not available, will generate on-the-fly")
+        print(f"Pre-computed embeddings not available, will generate on-the-fly with hidden_dim={esm_hidden_size}")
 
     full_dataset = EfficientProteinDataset(
         config.data.data_path,
