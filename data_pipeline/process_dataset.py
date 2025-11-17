@@ -31,42 +31,42 @@ except ImportError:
 def create_efficient_dataset(raw_dir, output_dir, include_structural_tokens=True):
     """
     Create an efficient dataset file that contains all processed protein data in one file
-    
+
     Args:
         raw_dir: Directory containing PDB files
         output_dir: Directory to save the processed dataset file
         include_structural_tokens: Whether to generate structural tokens from PDB files
     """
     print(f"Creating efficient dataset from {raw_dir}")
-    
+
     # Use the ProteinStructureDataset to process all files at once
     temp_dataset = ProteinStructureDataset(raw_dir)
-    
+
     print(f"Processed {len(temp_dataset.proteins)} proteins from PDB files")
-    
+
     # Generate structural tokens if requested
     if include_structural_tokens:
         print("Generating Foldseek structural tokens for each protein...")
         structural_tokens_list = []
-        
+
         # Get list of PDB files to process
         pdb_files = []
         for file in os.listdir(raw_dir):
             if file.lower().endswith('.pdb'):
                 pdb_files.append(os.path.join(raw_dir, file))
-        
+
         print(f"Found {len(pdb_files)} PDB files to process for structural tokens")
-        
+
         for i, pdb_file in enumerate(tqdm(pdb_files, desc="Generating Foldseek structural tokens")):
             pdb_name = os.path.splitext(os.path.basename(pdb_file))[0]
-            
+
             # Find corresponding protein data in the processed dataset
             protein_data = None
             for protein in temp_dataset.proteins:
                 if protein['id'] == pdb_name:
                     protein_data = protein
                     break
-            
+
             if protein_data is not None:
                 # Generate structural tokens for this PDB file using Foldseek
                 try:
@@ -83,34 +83,58 @@ def create_efficient_dataset(raw_dir, output_dir, include_structural_tokens=True
                     print(f"  Error generating tokens for {pdb_name}: {e}")
             else:
                 print(f"No protein data found for {pdb_name}")
-    
+
     # Save the entire processed dataset to a single file
+    # Handle numpy arrays properly to avoid pickling issues
     os.makedirs(output_dir, exist_ok=True)
     dataset_file = os.path.join(output_dir, "processed_dataset.pkl")
-    
+
+    # Prepare the dataset for safe pickling by ensuring numpy arrays are handled properly
+    safe_proteins = []
+    for protein in temp_dataset.proteins:
+        safe_protein = {}
+        for key, value in protein.items():
+            # Convert numpy arrays to new arrays to ensure proper serialization
+            if isinstance(value, np.ndarray):
+                # Create a completely new array with the same content
+                safe_protein[key] = np.array(value, copy=True)
+            else:
+                safe_protein[key] = value
+        safe_proteins.append(safe_protein)
+
     with open(dataset_file, 'wb') as f:
-        pickle.dump(temp_dataset.proteins, f)
-    
+        pickle.dump(safe_proteins, f)
+
     print(f"Saved processed dataset to {dataset_file} with {len(temp_dataset.proteins)} proteins")
-    
+
     # Also create a mapping file that maps indices to protein IDs
     id_mapping = {}
     for i, protein in enumerate(temp_dataset.proteins):
         id_mapping[i] = protein['id']
-    
+
     mapping_file = os.path.join(output_dir, "id_mapping.json")
     with open(mapping_file, 'w') as f:
         json.dump(id_mapping, f)
-    
+
     print(f"Saved ID mapping to {mapping_file}")
-    
+
     # Save structural tokens if generated
     if include_structural_tokens and len(structural_tokens_list) > 0:
         struct_token_file = os.path.join(output_dir, "structural_tokens.pkl")
+        # Handle structural tokens with the same approach for safe pickling
+        safe_structural_tokens = []
+        for item in structural_tokens_list:
+            safe_item = {}
+            for key, value in item.items():
+                if isinstance(value, np.ndarray):
+                    safe_item[key] = np.array(value, copy=True)
+                else:
+                    safe_item[key] = value
+            safe_structural_tokens.append(safe_item)
         with open(struct_token_file, 'wb') as f:
-            pickle.dump(structural_tokens_list, f)
+            pickle.dump(safe_structural_tokens, f)
         print(f"Saved structural tokens for {len(structural_tokens_list)} proteins to {struct_token_file}")
-    
+
     return dataset_file, mapping_file
 
 
@@ -118,7 +142,7 @@ def process_directory(input_dir, output_dir, pdb_extensions=['.pdb', '.ent']):
     """
     Process all PDB files in a directory by initializing the dataset once.
     This is much more efficient than processing files one by one.
-    
+
     Args:
         input_dir: Directory containing PDB files
         output_dir: Directory to save processed features
@@ -126,7 +150,7 @@ def process_directory(input_dir, output_dir, pdb_extensions=['.pdb', '.ent']):
     """
     # Create output directory if it doesn't exist
     os.makedirs(output_dir, exist_ok=True)
-    
+
     # --- EFFICIENT REFACTOR ---
     # Initialize the dataset ONCE. This will process all PDBs in the input_dir internally,
     # avoiding the massive overhead of calling DSSP for each file in a separate process.
@@ -138,7 +162,7 @@ def process_directory(input_dir, output_dir, pdb_extensions=['.pdb', '.ent']):
     success_count = 0
     fail_count = 0
     processed_files_list = []
-    
+
     # Loop through the pre-processed protein data and save each to a separate file
     for protein_info in tqdm(dataset.proteins, desc="Saving processed features"):
         try:
@@ -146,25 +170,33 @@ def process_directory(input_dir, output_dir, pdb_extensions=['.pdb', '.ent']):
             if protein_info and 'id' in protein_info:
                 protein_id = protein_info['id']
                 output_file = os.path.join(output_dir, f"{protein_id}_features.pkl")
-                
+
+                # Handle numpy arrays properly for individual file saving
+                safe_protein = {}
+                for key, value in protein_info.items():
+                    if isinstance(value, np.ndarray):
+                        safe_protein[key] = np.array(value, copy=True)
+                    else:
+                        safe_protein[key] = value
+
                 with open(output_file, 'wb') as f:
-                    pickle.dump(protein_info, f)
-                
+                    pickle.dump(safe_protein, f)
+
                 processed_files_list.append(os.path.basename(output_file))
                 success_count += 1
             else:
                 # This case handles if the dataset processing returned a None entry
                 print("Warning: A processed item was empty or lacked an ID.")
                 fail_count += 1
-                
+
         except Exception as e:
             # Get protein ID for a more informative error message if possible
             pid_for_error = protein_info.get('id', 'UNKNOWN') if isinstance(protein_info, dict) else 'UNKNOWN'
             print(f"Error saving features for protein {pid_for_error}: {e}")
             fail_count += 1
-            
+
     print(f"\nProcessing completed! Success: {success_count}, Failed: {fail_count}")
-    
+
     # Create a summary file
     summary = {
         "input_dir": input_dir,
@@ -174,11 +206,11 @@ def process_directory(input_dir, output_dir, pdb_extensions=['.pdb', '.ent']):
         "failed_saves": fail_count,
         "processed_files": processed_files_list
     }
-    
+
     summary_path = os.path.join(output_dir, "processing_summary.json")
     with open(summary_path, 'w') as f:
         json.dump(summary, f, indent=2)
-    
+
     print(f"Summary saved to {summary_path}")
     return summary
 
@@ -186,12 +218,12 @@ def process_directory(input_dir, output_dir, pdb_extensions=['.pdb', '.ent']):
 def validate_processed_data(processed_dir):
     """
     Validate the processed data to ensure it meets requirements
-    
+
     Args:
         processed_dir: Directory containing processed data files
     """
     print(f"Validating processed data in {processed_dir}...")
-    
+
     # Check for the single large dataset file first
     efficient_dataset_file = Path(processed_dir) / "processed_dataset.pkl"
     if efficient_dataset_file.exists():
@@ -207,10 +239,10 @@ def validate_processed_data(processed_dir):
     if not pkl_files:
         print("No processed files found!")
         return False
-    
+
     valid_count = 0
     invalid_count = 0
-    
+
     # Check first 10 as a sample
     for item in tqdm(pkl_files[:10], desc="Validating samples"):
         try:
@@ -219,7 +251,7 @@ def validate_processed_data(processed_dir):
             else:
                 with open(item, 'rb') as f:
                     data = pickle.load(f)
-                
+
             # Validate required fields exist (new format with N, CA, C coordinates)
             required_keys = ['sequence', 'n_coords', 'ca_coords', 'c_coords', 'id']
             if all(key in data for key in required_keys):
@@ -228,8 +260,8 @@ def validate_processed_data(processed_dir):
                 n_coord_shape = data['n_coords'].shape
                 ca_coord_shape = data['ca_coords'].shape
                 c_coord_shape = data['c_coords'].shape
-                
-                if (seq_len > 0 and 
+
+                if (seq_len > 0 and
                     n_coord_shape[0] == seq_len and n_coord_shape[1] == 3 and
                     ca_coord_shape[0] == seq_len and ca_coord_shape[1] == 3 and
                     c_coord_shape[0] == seq_len and c_coord_shape[1] == 3):
@@ -257,7 +289,7 @@ def validate_processed_data(processed_dir):
         except Exception as e:
             print(f"Error validating item {item if not source_is_file else item.get('id', 'Unknown ID')}: {e}")
             invalid_count += 1
-    
+
     print(f"Validation complete: {valid_count} valid, {invalid_count} invalid samples (sampled first 10 of {len(pkl_files)})")
     return valid_count > 0
 
@@ -278,11 +310,11 @@ def main():
                         help="Skip generation of structural tokens (for faster processing)")
     parser.add_argument("--generate_gearnet_embeddings", action="store_true",
                         help="Generate GearNet embeddings for processed proteins")
-    
+
     args = parser.parse_args()
-    
+
     print(f"Processing data from {args.raw_dir} to {args.output_dir}")
-    
+
     # The --create_efficient_dataset flag provides the fastest experience for both processing and training.
     if args.create_efficient_dataset:
         print("Creating single efficient dataset file for fast loading...")
@@ -292,19 +324,19 @@ def main():
         # Otherwise, process into individual files using the now-efficient method.
         # Note: Individual file processing doesn't include structural tokens for consistency
         process_directory(args.raw_dir, args.output_dir, args.pdb_extensions)
-    
+
     # Optionally validate the processed data
     if args.validate:
         validate_processed_data(args.output_dir)
-    
+
     # If requested, generate GearNet embeddings
     if args.generate_gearnet_embeddings:
         print("Generating GearNet embeddings...")
-        
+
         # Import here to avoid issues if the dependencies are not available
         try:
             from scripts.generate_gearnet_embeddings import generate_gearnet_embeddings_for_dataset
-            
+
             # Generate GearNet embeddings for the processed dataset
             embeddings_output_dir = os.path.join(project_root, "embeddings")
             generate_gearnet_embeddings_for_dataset(

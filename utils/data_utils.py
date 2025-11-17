@@ -27,14 +27,14 @@ class ProteinStructureDataset(Dataset):
         self.data_path = data_path
         self.max_seq_len = max_seq_len
         self.include_3d_coords = include_3d_coords
-        
+
         # Load protein data
         self.proteins = self.load_protein_data()
-        
+
     def load_protein_data(self):
         """Load protein sequences and structures from data directory"""
         proteins = []
-        
+
         # Look for PDB files
         for filename in os.listdir(self.data_path):
             if filename.lower().endswith('.pdb'):
@@ -42,29 +42,29 @@ class ProteinStructureDataset(Dataset):
                 protein_data = self.extract_protein_info(pdb_path)
                 if protein_data is not None:
                     proteins.append(protein_data)
-                    
+
         return proteins
-    
+
     def extract_protein_info(self, pdb_path):
         """Extract sequence and structural information from PDB file including N, CA, C coordinates"""
         try:
             # Parse PDB file
             parser = PDBParser(QUIET=True)
             structure = parser.get_structure('protein', pdb_path)
-            
+
             # Get first model
             model = structure[0]  # First model
-            
+
             # Extract sequence and coordinates
             sequence = ""
             n_coords = []
             ca_coords = []
             c_coords = []
-            
+
             for chain in model:
                 for residue in chain:
                     # Check if it's a protein residue
-                    if residue.get_resname() in ['ALA', 'ARG', 'ASN', 'ASP', 'CYS', 
+                    if residue.get_resname() in ['ALA', 'ARG', 'ASN', 'ASP', 'CYS',
                                                  'GLN', 'GLU', 'GLY', 'HIS', 'ILE',
                                                  'LEU', 'LYS', 'MET', 'PHE', 'PRO',
                                                  'SER', 'THR', 'TRP', 'TYR', 'VAL']:
@@ -72,32 +72,32 @@ class ProteinStructureDataset(Dataset):
                         aa_code = self.three_to_one(residue.get_resname())
                         if aa_code != 'X':  # Unknown amino acid
                             sequence += aa_code
-                            
+
                             # Try to get backbone atom coordinates
                             n_coord = ca_coord = c_coord = None
-                            
+
                             try:
                                 n_atom = residue['N']
                                 n_coord = [n_atom.get_coord()[0], n_atom.get_coord()[1], n_atom.get_coord()[2]]
                             except KeyError:
                                 pass  # N coordinate not available
-                            
+
                             try:
                                 ca_atom = residue['CA']
                                 ca_coord = [ca_atom.get_coord()[0], ca_atom.get_coord()[1], ca_atom.get_coord()[2]]
                             except KeyError:
                                 pass  # CA coordinate not available
-                            
+
                             try:
                                 c_atom = residue['C']
                                 c_coord = [c_atom.get_coord()[0], c_atom.get_coord()[1], c_atom.get_coord()[2]]
                             except KeyError:
                                 pass  # C coordinate not available
-                            
+
                             n_coords.append(n_coord if n_coord is not None else [0, 0, 0])  # Use zero if not available
                             ca_coords.append(ca_coord if ca_coord is not None else [0, 0, 0])  # Use zero if not available
                             c_coords.append(c_coord if c_coord is not None else [0, 0, 0])  # Use zero if not available
-            
+
             if len(sequence) > 0:
                 # Ensure all coordinate lists have the same length
                 min_len = min(len(sequence), len(n_coords), len(ca_coords), len(c_coords))
@@ -105,7 +105,7 @@ class ProteinStructureDataset(Dataset):
                 n_coords = n_coords[:min_len]
                 ca_coords = ca_coords[:min_len]
                 c_coords = c_coords[:min_len]
-                
+
                 return {
                     'sequence': sequence,
                     'n_coords': np.array(n_coords),
@@ -113,13 +113,13 @@ class ProteinStructureDataset(Dataset):
                     'c_coords': np.array(c_coords),
                     'id': os.path.basename(pdb_path).replace('.pdb', '')
                 }
-                
+
         except Exception as e:
             print(f"Error processing {pdb_path}: {e}")
             return None
-            
+
         return None
-    
+
     def three_to_one(self, three_letter):
         """Convert three-letter amino acid code to one-letter"""
         mapping = {
@@ -129,28 +129,28 @@ class ProteinStructureDataset(Dataset):
             'SER': 'S', 'THR': 'T', 'TRP': 'W', 'TYR': 'Y', 'VAL': 'V'
         }
         return mapping.get(three_letter, 'X')
-    
+
     def __len__(self):
         return len(self.proteins)
-    
+
     def __getitem__(self, idx):
         protein = self.proteins[idx]
-        
+
         sequence = protein['sequence']
         n_coords = protein['n_coords']
         ca_coords = protein['ca_coords']
         c_coords = protein['c_coords']
-        
+
         # Truncate if necessary
         if len(sequence) > self.max_seq_len:
             sequence = sequence[:self.max_seq_len]
             n_coords = n_coords[:self.max_seq_len]
             ca_coords = ca_coords[:self.max_seq_len]
             c_coords = c_coords[:self.max_seq_len]
-        
+
         # Create token mapping (simple mapping for now)
         token_ids = self.sequence_to_tokens(sequence)
-        
+
         # Pad or truncate to max length
         if len(token_ids) < self.max_seq_len:
             padding_length = self.max_seq_len - len(token_ids)
@@ -159,10 +159,10 @@ class ProteinStructureDataset(Dataset):
             n_coords = np.vstack([n_coords, padding_coords])
             ca_coords = np.vstack([ca_coords, padding_coords])
             c_coords = np.vstack([c_coords, padding_coords])
-        
+
         # Create attention mask (1 for real tokens, 0 for padding)
         attention_mask = [1 if token != 1 else 0 for token in token_ids]  # 1 is <pad> in ESM2
-        
+
         result = {
             'input_ids': torch.tensor(token_ids, dtype=torch.long),
             'attention_mask': torch.tensor(attention_mask, dtype=torch.long),
@@ -172,7 +172,7 @@ class ProteinStructureDataset(Dataset):
             'seq_len': len(protein['sequence']),
             'protein_id': protein['id']
         }
-        
+
         # Add structural tokens if available
         # Use try-except to handle missing structural tokens gracefully
         if self.include_structural_tokens:
@@ -196,7 +196,7 @@ class ProteinStructureDataset(Dataset):
                 pass
 
         return result
-    
+
     def sequence_to_tokens(self, sequence):
         """
         Convert amino acid sequence to token IDs using ESM2 vocabulary
@@ -231,7 +231,7 @@ def collate_fn(batch):
     n_coords = torch.stack([item['n_coords'] for item in batch])
     ca_coords = torch.stack([item['ca_coords'] for item in batch])
     c_coords = torch.stack([item['c_coords'] for item in batch])
-    
+
     result = {
         'input_ids': input_ids,
         'attention_mask': attention_mask,
@@ -241,7 +241,7 @@ def collate_fn(batch):
         'seq_lens': [item['seq_len'] for item in batch],
         'protein_ids': [item['protein_id'] for item in batch]
     }
-    
+
     # Add pre-computed embeddings if they exist in ALL items of the batch
     if all('precomputed_embeddings' in item for item in batch):
         precomputed_embeddings = torch.stack([item['precomputed_embeddings'] for item in batch])
@@ -262,32 +262,32 @@ def load_structure_from_pdb(pdb_path, chain_id=None):
     try:
         parser = PDBParser(QUIET=True)
         structure = parser.get_structure('protein', pdb_path)
-        
+
         # Get first model
         model = structure[0]
-        
+
         # Select chain if specified, otherwise use first chain
         if chain_id:
             chain = model[chain_id]
         else:
             chain = list(model.get_chains())[0]  # First chain
-            
+
         sequence = ""
         coordinates = []
         residue_ids = []
-        
+
         for residue in chain:
             # Check if it's a protein residue
-            if residue.get_resname() in ['ALA', 'ARG', 'ASN', 'ASP', 'CYS', 
+            if residue.get_resname() in ['ALA', 'ARG', 'ASN', 'ASP', 'CYS',
                                          'GLN', 'GLU', 'GLY', 'HIS', 'ILE',
                                          'LEU', 'LYS', 'MET', 'PHE', 'PRO',
                                          'SER', 'THR', 'TRP', 'TYR', 'VAL']:
-                
+
                 aa_code = three_to_one(residue.get_resname())
                 if aa_code != 'X':  # Unknown amino acid
                     sequence += aa_code
                     residue_ids.append(residue.get_id()[1])  # Residue number
-                    
+
                     # Get CA coordinate
                     try:
                         ca_atom = residue['CA']
@@ -298,7 +298,7 @@ def load_structure_from_pdb(pdb_path, chain_id=None):
                         for atom in residue:
                             if atom.get_name() in ['N', 'CA', 'C', 'O']:
                                 atom_coords.append(atom.get_coord())
-                        
+
                         if atom_coords:
                             avg_coord = np.mean(atom_coords, axis=0)
                             coordinates.append(avg_coord.tolist())
@@ -306,13 +306,13 @@ def load_structure_from_pdb(pdb_path, chain_id=None):
                             # Use first atom
                             first_atom = list(residue.get_atoms())[0]
                             coordinates.append(list(first_atom.get_coord()))
-        
+
         return {
             'sequence': sequence,
             'coordinates': np.array(coordinates),
             'residue_ids': residue_ids
         }
-    
+
     except Exception as e:
         print(f"Error loading structure from {pdb_path}: {e}")
         return None
@@ -345,11 +345,11 @@ class EfficientProteinDataset(Dataset):
         self.max_seq_len = max_seq_len
         self.include_structural_tokens = include_structural_tokens
         self.load_embeddings = load_embeddings
-        
+
         # Load the pre-processed dataset
         dataset_file = os.path.join(processed_data_path, "processed_dataset.pkl")
         mapping_file = os.path.join(processed_data_path, "id_mapping.json")
-        
+
         # Also look for structural token file
         if include_structural_tokens:
             struct_token_file = os.path.join(processed_data_path, "structural_tokens.pkl")
@@ -362,7 +362,7 @@ class EfficientProteinDataset(Dataset):
                       f"Please prepare structural tokens using Foldseek method. "
                       f"Continuing without structural tokens.")
                 self.include_structural_tokens = False
-        
+
         if os.path.exists(dataset_file):
             with open(dataset_file, 'rb') as f:
                 self.proteins = pickle.load(f)
@@ -370,7 +370,7 @@ class EfficientProteinDataset(Dataset):
         else:
             raise FileNotFoundError(f"Processed dataset not found at {dataset_file}. "
                                   f"Run process_data.py to create the processed dataset first.")
-        
+
         # Load pre-computed embeddings if requested
         if load_embeddings:
             embeddings_dir = os.path.join(processed_data_path, "embeddings")
@@ -381,7 +381,7 @@ class EfficientProteinDataset(Dataset):
                 print(f"Warning: Embeddings directory not found at {embeddings_dir}. "
                       f"Continuing without pre-computed embeddings.")
                 self.embeddings_dict = {}
-        
+
         # Load the ID mapping if it exists
         if os.path.exists(mapping_file):
             with open(mapping_file, 'r') as f:
@@ -391,52 +391,57 @@ class EfficientProteinDataset(Dataset):
         else:
             # Create ID mapping if not found
             self.id_mapping = {i: protein['id'] for i, protein in enumerate(self.proteins)}
-    
+
     def _load_embeddings_from_directory(self, embeddings_dir):
         """
         Load embeddings from the embeddings directory
         Each protein should have an embedding file named {protein_id}_gearnet_embeddings.pkl
         """
         embeddings_dict = {}
-        
+
         # Look for embedding files in the directory
         for filename in os.listdir(embeddings_dir):
             if filename.endswith('_gearnet_embeddings.pkl'):
                 protein_id = filename.replace('_gearnet_embeddings.pkl', '')
-                
+
                 # Load the embedding file
                 embedding_path = os.path.join(embeddings_dir, filename)
                 try:
                     with open(embedding_path, 'rb') as f:
                         embedding_data = pickle.load(f)
-                        # Store only the embeddings array
-                        embeddings_dict[protein_id] = embedding_data['embeddings']
+                        # Store only the embeddings array and ensure it's a proper numpy array
+                        embeddings = embedding_data['embeddings']
+                        if isinstance(embeddings, np.ndarray):
+                            # Create a new array to avoid reference issues
+                            embeddings_dict[protein_id] = np.array(embeddings, copy=True)
+                        else:
+                            embeddings_dict[protein_id] = embeddings
                 except Exception as e:
                     print(f"Error loading embedding file {embedding_path}: {e}")
-        
+
         return embeddings_dict
-    
+
     def __len__(self):
         return len(self.proteins)
-    
+
     def __getitem__(self, idx):
         protein = self.proteins[idx]
-        
+
         sequence = protein['sequence']
         n_coords = protein['n_coords']
         ca_coords = protein['ca_coords']
         c_coords = protein['c_coords']
-        
+
         # Truncate if necessary
         if len(sequence) > self.max_seq_len:
             sequence = sequence[:self.max_seq_len]
             n_coords = n_coords[:self.max_seq_len]
             ca_coords = ca_coords[:self.max_seq_len]
             c_coords = c_coords[:self.max_seq_len]
-        
+
         # Create token mapping (simple mapping for now)
         token_ids = self.sequence_to_tokens(sequence)
-        
+
         # Pad or truncate to max length
         if len(token_ids) < self.max_seq_len:
             padding_length = self.max_seq_len - len(token_ids)
@@ -445,10 +450,10 @@ class EfficientProteinDataset(Dataset):
             n_coords = np.vstack([n_coords, padding_coords])
             ca_coords = np.vstack([ca_coords, padding_coords])
             c_coords = np.vstack([c_coords, padding_coords])
-        
+
         # Create attention mask (1 for real tokens, 0 for padding)
         attention_mask = [1 if token != 1 else 0 for token in token_ids]  # 1 is <pad> in ESM2
-        
+
         result = {
             'input_ids': torch.tensor(token_ids, dtype=torch.long),
             'attention_mask': torch.tensor(attention_mask, dtype=torch.long),
@@ -458,7 +463,7 @@ class EfficientProteinDataset(Dataset):
             'seq_len': len(protein['sequence']),
             'protein_id': protein['id']
         }
-        
+
         # Add pre-computed embeddings if available
         if self.load_embeddings and protein['id'] in self.embeddings_dict:
             embeddings = self.embeddings_dict[protein['id']]
@@ -471,7 +476,7 @@ class EfficientProteinDataset(Dataset):
                 padding_embeddings = np.zeros((padding_length, embeddings.shape[-1]))
                 embeddings = np.vstack([embeddings, padding_embeddings])
             result['precomputed_embeddings'] = torch.tensor(embeddings, dtype=torch.float32)
-        
+
         # Add structural tokens if available
         # Use try-except to handle missing structural tokens gracefully
         if self.include_structural_tokens:
@@ -495,7 +500,7 @@ class EfficientProteinDataset(Dataset):
                 pass
 
         return result
-    
+
     def sequence_to_tokens(self, sequence):
         """
         Convert amino acid sequence to token IDs using ESM2 vocabulary
