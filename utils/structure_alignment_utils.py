@@ -22,7 +22,7 @@ class StructureAlignmentLoss(nn.Module):
     ):
         """
         Initialize the structure alignment loss module
-        
+
         Args:
             hidden_dim: Dimension of the protein language model embeddings
             num_structural_classes: Number of structural alphabet classes (default 20 for Foldseek)
@@ -31,20 +31,20 @@ class StructureAlignmentLoss(nn.Module):
             physical_weight: Weight for the physical-level loss
         """
         super().__init__()
-        
+
         self.hidden_dim = hidden_dim
         self.num_structural_classes = num_structural_classes
         self.shared_projection_dim = shared_projection_dim
         self.latent_weight = latent_weight
         self.physical_weight = physical_weight
-        
+
         # Projection layers for latent-level loss
         self.pLM_projection = nn.Linear(hidden_dim, shared_projection_dim)
         self.pGNN_projection = nn.Linear(hidden_dim, shared_projection_dim)  # Assuming pGNN has same hidden dim
-        
+
         # Learnable temperature parameter for contrastive learning
         self.temperature = nn.Parameter(torch.tensor(1.0))  # Initialize with value of 1.0
-        
+
         # MLP head for physical-level loss (structural token prediction)
         self.structural_prediction_head = nn.Sequential(
             nn.Linear(hidden_dim, hidden_dim // 2),
@@ -55,9 +55,9 @@ class StructureAlignmentLoss(nn.Module):
             nn.Dropout(0.1),
             nn.Linear(hidden_dim // 4, num_structural_classes)
         )
-        
+
         self.ce_loss = nn.CrossEntropyLoss(ignore_index=-100)
-    
+
     def forward(
         self,
         pLM_embeddings,
@@ -67,13 +67,13 @@ class StructureAlignmentLoss(nn.Module):
     ):
         """
         Calculate the combined structure alignment loss
-        
+
         Args:
             pLM_embeddings: (batch_size, seq_len, hidden_dim) - embeddings from protein language model
             pGNN_embeddings: (batch_size, seq_len, hidden_dim) - embeddings from pGNN (e.g. GearNet)
             structure_tokens: (batch_size, seq_len) - precomputed structural alphabet tokens
             attention_mask: (batch_size, seq_len) - attention mask to ignore padding positions
-        
+
         Returns:
             A dictionary containing:
             - total_loss: Combined structure alignment loss
@@ -82,65 +82,65 @@ class StructureAlignmentLoss(nn.Module):
         """
         # Calculate latent-level loss
         latent_loss = self._calculate_latent_loss(pLM_embeddings, pGNN_embeddings, attention_mask)
-        
+
         # Calculate physical-level loss
         physical_loss = self._calculate_physical_loss(pLM_embeddings, structure_tokens, attention_mask)
-        
+
         # Combine losses
         total_loss = self.latent_weight * latent_loss + self.physical_weight * physical_loss
-        
+
         return {
             'total_loss': total_loss,
             'latent_loss': latent_loss,
             'physical_loss': physical_loss
         }
-    
+
     def _calculate_latent_loss(self, pLM_embeddings, pGNN_embeddings, attention_mask=None):
         """
         Calculate the latent-level contrastive loss between pLM and pGNN embeddings
         """
         batch_size, seq_len, hidden_dim = pLM_embeddings.shape
-        
+
         # Project embeddings to shared space
         pLM_projected = self.pLM_projection(pLM_embeddings)  # (batch_size, seq_len, shared_dim)
         pGNN_projected = self.pGNN_projection(pGNN_embeddings)  # (batch_size, seq_len, shared_dim)
-        
+
         # Reshape to (batch_size * seq_len, shared_dim) for easier computation
         pLM_flat = pLM_projected.view(-1, self.shared_projection_dim)  # (batch_size * seq_len, shared_dim)
         pGNN_flat = pGNN_projected.view(-1, self.shared_projection_dim)  # (batch_size * seq_len, shared_dim)
-        
+
         # Create attention mask mask_flattened
         if attention_mask is not None:
             # Flatten attention mask to match the flattened embeddings
             mask_flat = attention_mask.view(-1).bool()  # (batch_size * seq_len,)
         else:
             mask_flat = torch.ones(batch_size * seq_len, dtype=torch.bool, device=pLM_embeddings.device)
-        
+
         # Only compute loss for non-padded positions
         pLM_active = pLM_flat[mask_flat]  # (active_positions, shared_dim)
         pGNN_active = pGNN_flat[mask_flat]  # (active_positions, shared_dim)
-        
+
         if pLM_active.size(0) == 0:
             return torch.tensor(0.0, device=pLM_embeddings.device, requires_grad=True)
-        
+
         # Calculate similarity scores: (active_positions, active_positions)
         similarity_matrix = torch.matmul(pLM_active, pGNN_active.t()) * self.temperature  # Scaled dot product
-        
+
         # Create labels for cross-entropy: diagonal positions are positive pairs
         batch_active = pLM_active.size(0)
         labels = torch.arange(batch_active, device=pLM_embeddings.device)
-        
+
         # Loss from pLM to pGNN (a2g)
         a2g_loss = F.cross_entropy(similarity_matrix, labels)
-        
+
         # Loss from pGNN to pLM (g2a)
         g2a_loss = F.cross_entropy(similarity_matrix.t(), labels)
-        
+
         # Average the two directional losses
         latent_loss = 0.5 * (a2g_loss + g2a_loss)
-        
+
         return latent_loss
-    
+
     def _calculate_physical_loss(self, pLM_embeddings, structure_tokens, attention_mask=None):
         """
         Calculate the physical-level loss for structural token prediction
@@ -153,6 +153,22 @@ class StructureAlignmentLoss(nn.Module):
         # Flatten for loss calculation
         logits_flat = logits.view(-1, self.num_structural_classes)  # (batch_size * seq_len, num_classes)
         tokens_flat = structure_tokens.view(-1)  # (batch_size * seq_len,)
+
+        # Debug: Print statistics about structural tokens
+        unique_tokens = torch.unique(tokens_flat[tokens_flat >= 0])  # Only non-padded tokens
+        print(f"Physical loss debug - Batch size: {batch_size}, Seq len: {seq_len}")
+        print(f"  Unique tokens (non-padded): {unique_tokens.tolist()}")
+        print(f"  Token range: [{tokens_flat[tokens_flat >= 0].min().item() if (tokens_flat >= 0).any() else 'N/A'}, "
+              f"{tokens_flat[tokens_flat >= 0].max().item() if (tokens_flat >= 0).any() else 'N/A'}]")
+        print(f"  Number of valid (non-padded) tokens: {(tokens_flat >= 0).sum().item()}")
+        print(f"  Number of padding tokens: {(tokens_flat == -100).sum().item()}")
+
+        # Show token distribution for first sample in batch if batch size is reasonable
+        if batch_size > 0:
+            first_sample_tokens = structure_tokens[0]
+            print(f"  First sample tokens (first 50): {first_sample_tokens[:min(50, len(first_sample_tokens))].tolist()}")
+            if attention_mask is not None:
+                print(f"  First sample attention mask (first 50): {attention_mask[0][:min(50, len(attention_mask[0]))].tolist()}")
 
         # CRITICAL: Validate and clamp structural tokens to valid range [0, num_classes-1]
         # This handles tokens generated with old buggy code that mapped unknown chars to a value outside of the class range
@@ -209,20 +225,20 @@ class PretrainedGNNWrapper(nn.Module):
                 print(f"Could not load TorchDrug GearNet implementation: {e}")
                 print("Falling back to stub implementation")
                 self.backbone = self._create_stub_gearnet(hidden_dim, freeze)
-    
+
     def _create_stub_gearnet(self, hidden_dim, freeze):
         """Create a stub GearNet implementation if the real one is not available"""
         return StubGearNetWrapper(hidden_dim=hidden_dim, freeze=freeze)
-    
+
     def forward(self, n_coords, ca_coords, c_coords):
         """
         Forward pass through the frozen GNN to get structural embeddings
-        
+
         Args:
             n_coords: (batch_size, seq_len, 3) N atom coordinates
             ca_coords: (batch_size, seq_len, 3) CA atom coordinates
             c_coords: (batch_size, seq_len, 3) C atom coordinates
-        
+
         Returns:
             pGNN_embeddings: (batch_size, seq_len, hidden_dim) structural embeddings
         """
@@ -264,17 +280,17 @@ class StubGearNetWrapper(nn.Module):
         if freeze:
             for param in self.parameters():
                 param.requires_grad = False
-    
+
     def forward(self, n_coords, ca_coords, c_coords):
         """
         Forward pass through the GNN to get structural embeddings
         In a real implementation, this would process the 3D graph structure
-        
+
         Args:
             n_coords: (batch_size, seq_len, 3) N atom coordinates
             ca_coords: (batch_size, seq_len, 3) CA atom coordinates
             c_coords: (batch_size, seq_len, 3) C atom coordinates
-        
+
         Returns:
             pGNN_embeddings: (batch_size, seq_len, hidden_dim) structural embeddings
         """

@@ -157,6 +157,11 @@ def train_epoch(model, dataloader, optimizer, scheduler, dihedral_constraints, d
                 # Get pLM embeddings
                 pLM_embeddings = masked_outputs['sequence_output']
 
+                # Debug: Check structural token shape and content
+                print(f"Training debug - Structural tokens shape: {structure_tokens.shape}")
+                print(f"  Attention mask shape: {attention_mask.shape}")
+                print(f"  Valid tokens count: {(structure_tokens >= 0).sum().item()}")
+
                 # Calculate structure alignment loss
                 struct_align_results = structure_alignment_loss(
                     pLM_embeddings=pLM_embeddings,
