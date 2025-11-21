@@ -79,12 +79,14 @@ class StructureAlignmentLoss(nn.Module):
             - total_loss: Combined structure alignment loss
             - latent_loss: Latent-level contrastive loss
             - physical_loss: Physical-level structural token prediction loss
+            - latent_loss_per_sample: Per-sample latent-level losses
+            - physical_loss_per_sample: Per-sample physical-level losses
         """
-        # Calculate latent-level loss
-        latent_loss = self._calculate_latent_loss(pLM_embeddings, pGNN_embeddings, attention_mask)
+        # Calculate latent-level loss and per-sample components
+        latent_loss, latent_loss_per_sample = self._calculate_latent_loss_with_per_sample(pLM_embeddings, pGNN_embeddings, attention_mask)
 
-        # Calculate physical-level loss
-        physical_loss = self._calculate_physical_loss(pLM_embeddings, structure_tokens, attention_mask)
+        # Calculate physical-level loss and per-sample components
+        physical_loss, physical_loss_per_sample = self._calculate_physical_loss_with_per_sample(pLM_embeddings, structure_tokens, attention_mask)
 
         # Combine losses
         total_loss = self.latent_weight * latent_loss + self.physical_weight * physical_loss
@@ -92,12 +94,67 @@ class StructureAlignmentLoss(nn.Module):
         return {
             'total_loss': total_loss,
             'latent_loss': latent_loss,
-            'physical_loss': physical_loss
+            'physical_loss': physical_loss,
+            'latent_loss_per_sample': latent_loss_per_sample,
+            'physical_loss_per_sample': physical_loss_per_sample
         }
+
+    def _calculate_latent_loss_with_per_sample(self, pLM_embeddings, pGNN_embeddings, attention_mask=None):
+        """
+        Calculate the latent-level contrastive loss between pLM and pGNN embeddings with per-sample outputs
+        """
+        batch_size, seq_len, hidden_dim = pLM_embeddings.shape
+
+        # Project embeddings to shared space
+        pLM_projected = self.pLM_projection(pLM_embeddings)  # (batch_size, seq_len, shared_dim)
+        pGNN_projected = self.pGNN_projection(pGNN_embeddings)  # (batch_size, seq_len, shared_dim)
+
+        # Calculate per-sample latent losses
+        latent_loss_per_sample = torch.zeros(batch_size, device=pLM_embeddings.device)
+
+        for i in range(batch_size):
+            # Get embeddings for single sample
+            pLM_single = pLM_projected[i]  # (seq_len, shared_dim)
+            pGNN_single = pGNN_projected[i]  # (seq_len, shared_dim)
+
+            # Apply mask for this sample if provided
+            if attention_mask is not None:
+                sample_mask = attention_mask[i].bool()  # (seq_len,)
+                pLM_active = pLM_single[sample_mask]  # (active_len, shared_dim)
+                pGNN_active = pGNN_single[sample_mask]  # (active_len, shared_dim)
+            else:
+                pLM_active = pLM_single  # (seq_len, shared_dim)
+                pGNN_active = pGNN_single  # (seq_len, shared_dim)
+
+            # If no active positions, continue
+            if pLM_active.size(0) == 0:
+                continue
+
+            # Calculate similarity scores: (active_len, active_len)
+            similarity_matrix = torch.matmul(pLM_active, pGNN_active.t()) * self.temperature  # Scaled dot product
+
+            # Create labels for cross-entropy: diagonal positions are positive pairs
+            active_len = pLM_active.size(0)
+            labels = torch.arange(active_len, device=pLM_embeddings.device)
+
+            # Loss from pLM to pGNN (a2g)
+            a2g_loss = F.cross_entropy(similarity_matrix, labels)
+
+            # Loss from pGNN to pLM (g2a)
+            g2a_loss = F.cross_entropy(similarity_matrix.t(), labels)
+
+            # Average the two directional losses for this sample
+            sample_loss = 0.5 * (a2g_loss + g2a_loss)
+            latent_loss_per_sample[i] = sample_loss
+
+        # Overall latent loss is the average of per-sample losses
+        latent_loss = latent_loss_per_sample.mean() if latent_loss_per_sample.numel() > 0 else torch.tensor(0.0, device=pLM_embeddings.device)
+
+        return latent_loss, latent_loss_per_sample
 
     def _calculate_latent_loss(self, pLM_embeddings, pGNN_embeddings, attention_mask=None):
         """
-        Calculate the latent-level contrastive loss between pLM and pGNN embeddings
+        Calculate the latent-level contrastive loss between pLM and pGNN embeddings (original method)
         """
         batch_size, seq_len, hidden_dim = pLM_embeddings.shape
 
@@ -141,9 +198,59 @@ class StructureAlignmentLoss(nn.Module):
 
         return latent_loss
 
+    def _calculate_physical_loss_with_per_sample(self, pLM_embeddings, structure_tokens, attention_mask=None):
+        """
+        Calculate the physical-level loss for structural token prediction with per-sample outputs
+        """
+        batch_size, seq_len, hidden_dim = pLM_embeddings.shape
+
+        # Predict structural tokens
+        logits = self.structural_prediction_head(pLM_embeddings)  # (batch_size, seq_len, num_classes)
+
+        # Calculate per-sample physical losses
+        physical_loss_per_sample = torch.zeros(batch_size, device=pLM_embeddings.device)
+
+        for i in range(batch_size):
+            # Get logits and tokens for single sample
+            logits_single = logits[i]  # (seq_len, num_classes)
+            tokens_single = structure_tokens[i]  # (seq_len,)
+
+            # Apply mask if provided
+            if attention_mask is not None:
+                sample_mask = attention_mask[i]  # (seq_len,)
+                # Only consider valid positions (not masked)
+                valid_positions = sample_mask.bool() & (tokens_single >= 0)
+            else:
+                # Only consider non-padded positions (tokens >= 0)
+                valid_positions = tokens_single >= 0
+
+            # Get valid logits and tokens
+            valid_logits = logits_single[valid_positions]  # (valid_len, num_classes)
+            valid_tokens = tokens_single[valid_positions]  # (valid_len,)
+
+            # CRITICAL: Validate and remove invalid structural tokens to avoid corrupting the loss calculation
+            invalid_mask = (valid_tokens >= self.num_structural_classes) | (valid_tokens < 0)
+            if invalid_mask.any():
+                num_invalid = invalid_mask.sum().item()
+                print(f"Warning: Found {num_invalid} invalid structural tokens for sample {i}. Ignoring these positions.")
+                # Keep only valid tokens
+                valid_indices = ~invalid_mask
+                valid_logits = valid_logits[valid_indices]
+                valid_tokens = valid_tokens[valid_indices]
+
+            # Calculate cross-entropy loss for this sample if we have valid tokens
+            if valid_logits.size(0) > 0:
+                sample_loss = F.cross_entropy(valid_logits, valid_tokens, reduction='mean', ignore_index=-100)
+                physical_loss_per_sample[i] = sample_loss
+
+        # Overall physical loss is the average of per-sample losses
+        physical_loss = physical_loss_per_sample.mean() if physical_loss_per_sample.numel() > 0 else torch.tensor(0.0, device=pLM_embeddings.device)
+
+        return physical_loss, physical_loss_per_sample
+
     def _calculate_physical_loss(self, pLM_embeddings, structure_tokens, attention_mask=None):
         """
-        Calculate the physical-level loss for structural token prediction
+        Calculate the physical-level loss for structural token prediction (original method)
         """
         batch_size, seq_len, hidden_dim = pLM_embeddings.shape
 
