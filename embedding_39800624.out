@@ -1,0 +1,20 @@
+PyTorch version: 2.9.0+cu128
+Transformers version: 4.57.1
+Using device: cuda
+Loading model...
+Gradient checkpointing enabled
+Trainable parameters: 3,001,280 (1.99% of total)
+Using stub implementation for pre-trained GNN (avoiding TorchDrug)
+Loading dataset...
+Using efficient pre-processed dataset...
+Structural tokens available: True
+Pre-computed embeddings have wrong dimension 512, expected 640.
+Embeddings will be generated on-the-fly with hidden_dim=640
+Loaded structural tokens for 11157 proteins
+Loaded 11158 proteins from pre-processed dataset
+Dataset split: 8926 training samples, 2232 validation samples
+Mixed precision training enabled
+Starting training for 10 epochs...
+Effective batch size: 8
+
+Epoch 1/10

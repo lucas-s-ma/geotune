@@ -12,6 +12,7 @@ from pathlib import Path
 import pickle
 from tqdm import tqdm
 import argparse
+import gc
 
 # Add the project root directory to the Python path
 project_root = Path(__file__).parent.parent
@@ -49,30 +50,36 @@ def generate_gearnet_embeddings_for_protein(n_coords, ca_coords, c_coords, model
     return embeddings
 
 
-def generate_gearnet_embeddings_for_dataset(processed_dataset_path, output_dir, model_path=None, hidden_dim=512):
+def generate_gearnet_embeddings_for_dataset(processed_dataset_path, output_dir, model_path=None, hidden_dim=512, chunk_size=50):
     """
-    Generate GearNet embeddings for an entire processed dataset
+    Generate GearNet embeddings for an entire processed dataset with memory-efficient processing
 
     Args:
         processed_dataset_path: Path to the processed dataset directory containing processed_dataset.pkl
         output_dir: Directory to save GearNet embeddings
         model_path: Path to pre-trained model (uses proper GearNet implementation if available)
         hidden_dim: Hidden dimension for the model
+        chunk_size: Number of proteins to process before clearing GPU cache
     """
     print(f"Generating GearNet embeddings from {processed_dataset_path}")
+    print(f"Processing in chunks of {chunk_size} proteins to manage memory")
 
-    # Load the processed dataset
+    # Load the processed dataset metadata
     dataset_file = os.path.join(processed_dataset_path, "processed_dataset.pkl")
     if not os.path.exists(dataset_file):
         raise FileNotFoundError(f"Processed dataset not found at {dataset_file}")
 
+    print("Loading dataset metadata...")
     with open(dataset_file, 'rb') as f:
         proteins = pickle.load(f)
 
-    print(f"Loaded {len(proteins)} proteins from dataset")
+    total_proteins = len(proteins)
+    print(f"Total proteins to process: {total_proteins}")
 
     # Initialize the GearNet model (will try to use proper implementation first)
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    print(f"Using device: {device}")
+
     model = PretrainedGNNWrapper(
         model_path=model_path,
         hidden_dim=hidden_dim,
@@ -85,70 +92,81 @@ def generate_gearnet_embeddings_for_dataset(processed_dataset_path, output_dir, 
     # Create output directory
     os.makedirs(output_dir, exist_ok=True)
 
-    # Process each protein and generate embeddings
-    embeddings_dict = {}
+    # Process proteins in chunks to manage memory
+    successful_count = 0
+    failed_count = 0
+    chunk_count = 0
 
-    for i, protein in enumerate(tqdm(proteins, desc="Generating GearNet embeddings")):
-        protein_id = protein['id']
+    for start_idx in tqdm(range(0, total_proteins, chunk_size), desc="Processing chunks"):
+        end_idx = min(start_idx + chunk_size, total_proteins)
+        chunk = proteins[start_idx:end_idx]
 
-        try:
-            n_coords = protein['n_coords']  # (seq_len, 3)
-            ca_coords = protein['ca_coords']  # (seq_len, 3)
-            c_coords = protein['c_coords']  # (seq_len, 3)
+        # Process each protein in the current chunk
+        for protein in tqdm(chunk, desc=f"Processing chunk {chunk_count + 1}", leave=False):
+            protein_id = protein['id']
 
-            # Generate embeddings for this protein
-            embeddings = generate_gearnet_embeddings_for_protein(
-                n_coords, ca_coords, c_coords, model, device
-            )
+            try:
+                n_coords = protein['n_coords']  # (seq_len, 3)
+                ca_coords = protein['ca_coords']  # (seq_len, 3)
+                c_coords = protein['c_coords']  # (seq_len, 3)
 
-            # Ensure embeddings are properly handled to avoid pickling issues
-            if isinstance(embeddings, np.ndarray):
-                embeddings = np.array(embeddings, copy=True)
-            else:
-                embeddings = embeddings
+                # Generate embeddings for this protein
+                embeddings = generate_gearnet_embeddings_for_protein(
+                    n_coords, ca_coords, c_coords, model, device
+                )
 
-            # Save embeddings with protein ID
-            embeddings_dict[protein_id] = {
-                'protein_id': protein_id,
-                'embeddings': embeddings,  # (seq_len, hidden_dim)
-                'sequence_length': int(embeddings.shape[0])  # Convert to Python int to avoid pickling issues
-            }
+                # Ensure embeddings are properly handled to avoid pickling issues
+                embeddings = np.array(embeddings, copy=True) if isinstance(embeddings, np.ndarray) else embeddings
 
-            # Also save individual embedding file - ensure proper serialization
-            output_file = os.path.join(output_dir, f"{protein_id}_gearnet_embeddings.pkl")
-            embedding_data = {
-                'protein_id': protein_id,
-                'embeddings': np.array(embeddings, copy=True) if isinstance(embeddings, np.ndarray) else embeddings,
-                'sequence_length': int(embeddings.shape[0])
-            }
-            with open(output_file, 'wb') as f:
-                pickle.dump(embedding_data, f)
+                # Save individual embedding file immediately to free memory
+                output_file = os.path.join(output_dir, f"{protein_id}_gearnet_embeddings.pkl")
+                embedding_data = {
+                    'protein_id': protein_id,
+                    'embeddings': embeddings,
+                    'sequence_length': int(embeddings.shape[0])
+                }
 
-            if (i + 1) % 100 == 0:
-                print(f"Generated embeddings for {i + 1}/{len(proteins)} proteins")
+                with open(output_file, 'wb') as f:
+                    pickle.dump(embedding_data, f)
 
-        except Exception as e:
-            print(f"Error processing protein {protein_id}: {e}")
-            continue
+                successful_count += 1
 
-    # Save all embeddings as a single file - ensure proper serialization
-    all_embeddings_file = os.path.join(output_dir, "gearnet_embeddings.pkl")
-    # Prepare data with proper numpy array handling
-    all_embeddings_data = {}
-    for protein_id, data in embeddings_dict.items():
-        all_embeddings_data[protein_id] = {
-            'protein_id': data['protein_id'],
-            'embeddings': np.array(data['embeddings'], copy=True) if isinstance(data['embeddings'], np.ndarray) else data['embeddings'],
-            'sequence_length': int(data['sequence_length'])
-        }
+                # Show progress
+                current_total = start_idx + (successful_count + failed_count)
+                if current_total % 100 == 0:
+                    print(f"Progress: {current_total}/{total_proteins} proteins processed ({successful_count} successful, {failed_count} failed)")
 
-    with open(all_embeddings_file, 'wb') as f:
-        pickle.dump(all_embeddings_data, f)
+            except Exception as e:
+                failed_count += 1
+                print(f"Error processing protein {protein_id}: {e}")
 
-    print(f"Saved all GearNet embeddings to {all_embeddings_file}")
-    print(f"Generated embeddings for {len(embeddings_dict)} proteins")
+                # Continue to next protein without stopping
+                continue
 
-    return embeddings_dict
+        # Clear GPU cache and garbage collect after each chunk
+        chunk_count += 1
+        if hasattr(torch.cuda, 'empty_cache') and device.type == 'cuda':
+            torch.cuda.empty_cache()
+
+        # Force garbage collection after each chunk to free up memory
+        gc.collect()
+
+    print(f"\nProcessing completed!")
+    print(f"Successful: {successful_count} proteins")
+    print(f"Failed: {failed_count} proteins")
+    print(f"Total attempts: {successful_count + failed_count}")
+
+    # Create a simple summary file
+    summary_file = os.path.join(output_dir, "generation_summary.txt")
+    with open(summary_file, 'w') as f:
+        f.write(f"GearNet Embeddings Generation Summary\n")
+        f.write(f"Total proteins in input: {total_proteins}\n")
+        f.write(f"Successfully processed: {successful_count}\n")
+        f.write(f"Failed to process: {failed_count}\n")
+        f.write(f"Success rate: {successful_count/total_proteins*100:.2f}% if total_proteins > 0 else 0%\n")
+        f.write(f"Output directory: {output_dir}\n")
+
+    return successful_count
 
 
 def main():
@@ -161,22 +179,29 @@ def main():
                         help="Path to pre-trained model (optional)")
     parser.add_argument("--hidden_dim", type=int, default=512,
                         help="Hidden dimension for the model (default: 512)")
+    parser.add_argument("--chunk_size", type=int, default=50,
+                        help="Number of proteins to process in each memory chunk (default: 50)")
 
     args = parser.parse_args()
 
     print(f"Generating GearNet embeddings from {args.processed_dataset_path}")
     print(f"Output directory: {args.output_dir}")
+    print(f"Memory management: Processing in chunks of {args.chunk_size} proteins")
 
     # Generate embeddings
-    embeddings_dict = generate_gearnet_embeddings_for_dataset(
+    successful_count = generate_gearnet_embeddings_for_dataset(
         args.processed_dataset_path,
         args.output_dir,
         args.model_path,
-        args.hidden_dim
+        args.hidden_dim,
+        args.chunk_size
     )
 
-    print(f"Completed! Generated embeddings for {len(embeddings_dict)} proteins")
-    print(f"Embeddings saved to: {args.output_dir}")
+    print(f"Completed! Successfully generated embeddings for {successful_count} proteins")
+    print(f"Individual embeddings saved to: {args.output_dir}")
+
+    # Inform user about the summary
+    print(f"A summary file has been created at: {os.path.join(args.output_dir, 'generation_summary.txt')}")
 
 
 if __name__ == "__main__":
