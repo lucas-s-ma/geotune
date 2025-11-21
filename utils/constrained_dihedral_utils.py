@@ -13,77 +13,77 @@ import numpy as np
 def compute_dihedral_angles_from_coordinates(n_coords, ca_coords, c_coords):
     """
     Compute phi, psi angles from backbone atom coordinates (N, CA, C)
-    
+
     Args:
         n_coords: (batch_size, seq_len, 3) tensor of N atom coordinates
-        ca_coords: (batch_size, seq_len, 3) tensor of CA atom coordinates  
+        ca_coords: (batch_size, seq_len, 3) tensor of CA atom coordinates
         c_coords: (batch_size, seq_len, 3) tensor of C atom coordinates
-    
+
     Returns:
         cos_phi, cos_psi: (batch_size, seq_len-1) tensors of cosine values
     """
     batch_size, seq_len, _ = ca_coords.shape
-    
+
     if seq_len < 3:
         # Return empty tensors for insufficient length
-        return (torch.empty(batch_size, 0, device=ca_coords.device), 
+        return (torch.empty(batch_size, 0, device=ca_coords.device),
                 torch.empty(batch_size, 0, device=ca_coords.device))
-    
-    # Phi angle: C(i-1)-N(i)-CA(i)-C(i) 
+
+    # Phi angle: C(i-1)-N(i)-CA(i)-C(i)
     # Psi angle: N(i)-CA(i)-C(i)-N(i+1)
-    
-    # For phi angles: need C(i-1), N(i), CA(i), C(i) 
+
+    # For phi angles: need C(i-1), N(i), CA(i), C(i)
     # For psi angles: need N(i), CA(i), C(i), N(i+1)
-    
+
     # Shift coordinates to get required atoms for each angle
     # Phi angles calculated at residue i using atoms from residue i-1 and i
     c_prev = c_coords[:, :-1]   # C from previous residues
-    n_curr = n_coords[:, 1:]    # N from current residues  
+    n_curr = n_coords[:, 1:]    # N from current residues
     ca_curr = ca_coords[:, 1:]  # CA from current residues
     c_curr = c_coords[:, 1:]    # C from current residues
-    
+
     # Psi angles calculated at residue i using atoms from residue i and i+1
     n_curr_psi = n_coords[:, :-1]   # N from current residues
     ca_curr_psi = ca_coords[:, :-1] # CA from current residues
     c_curr_psi = c_coords[:, :-1]   # C from current residues
     n_next = n_coords[:, 1:]        # N from next residues
-    
+
     # Calculate vectors for phi angles
     v1_phi = n_curr - c_prev    # b1 vector
-    v2_phi = ca_curr - n_curr   # b2 vector  
+    v2_phi = ca_curr - n_curr   # b2 vector
     v3_phi = c_curr - ca_curr   # b3 vector
-    
+
     # Calculate vectors for psi angles
     v1_psi = ca_curr_psi - n_curr_psi  # b1 vector
     v2_psi = c_curr_psi - ca_curr_psi  # b2 vector
     v3_psi = n_next - c_curr_psi       # b3 vector
-    
+
     # Calculate cross products for normal vectors
     n1_phi = torch.cross(v1_phi, v2_phi, dim=-1)  # Normal to first plane
     n2_phi = torch.cross(v2_phi, v3_phi, dim=-1)  # Normal to second plane
-    
+
     n1_psi = torch.cross(v1_psi, v2_psi, dim=-1)  # Normal to first plane
     n2_psi = torch.cross(v2_psi, v3_psi, dim=-1)  # Normal to second plane
-    
+
     # Ensure normals are not zero vectors by adding small epsilon
     n1_phi = F.normalize(n1_phi, p=2, dim=-1)
     n2_phi = F.normalize(n2_phi, p=2, dim=-1)
     n1_psi = F.normalize(n1_psi, p=2, dim=-1)
     n2_psi = F.normalize(n2_psi, p=2, dim=-1)
-    
+
     # Calculate cosines of dihedral angles using dot products
     cos_phi = torch.clamp(torch.sum(n1_phi * n2_phi, dim=-1), -1, 1)
     cos_psi = torch.clamp(torch.sum(n1_psi * n2_psi, dim=-1), -1, 1)
-    
+
     return cos_phi, cos_psi
 
 
 class ConstrainedDihedralAngleConstraint(nn.Module):
     """
-    Implements constrained learning framework for dihedral angles (phi/psi) 
+    Implements constrained learning framework for dihedral angles (phi/psi)
     using primal-dual optimization approach.
     """
-    def __init__(self, 
+    def __init__(self,
                  constraint_weight=1.0,
                  alpha=1.0,  # Penalty for slack variables
                  epsilon=0.5,  # Upper bound for constraint loss
@@ -92,11 +92,11 @@ class ConstrainedDihedralAngleConstraint(nn.Module):
         self.constraint_weight = constraint_weight
         self.alpha = alpha
         self.epsilon = epsilon
-        
+
         # Linear layers to predict dihedral angles from embeddings
         self.phi_predictor = nn.Linear(640, 1)  # Assuming hidden size of 640 for ESM
         self.psi_predictor = nn.Linear(640, 1)
-        
+
         # Initialize layers with small random weights
         nn.init.xavier_uniform_(self.phi_predictor.weight)
         nn.init.zeros_(self.phi_predictor.bias)
@@ -106,24 +106,24 @@ class ConstrainedDihedralAngleConstraint(nn.Module):
         # Initialize primal and dual variables
         # Slack variable s (non-negative) for constraint violation
         self.s = nn.Parameter(torch.zeros(1), requires_grad=True)
-        
+
         # Dual variable λ (Lagrange multiplier, non-negative)
         self.lam = nn.Parameter(torch.zeros(1), requires_grad=True)
 
         # Dual optimizer will be set up separately
         self.dual_lr = dual_lr
         self.dual_optimizer = None
-        
+
     def initialize_dual_optimizer(self, lr=None):
         """Initialize the dual optimizer for Lagrange multipliers."""
         if lr is None:
             lr = self.dual_lr
         self.dual_optimizer = torch.optim.SGD([self.lam], lr=lr)
-        
+
     def forward(self, sequence_embeddings, n_coords, ca_coords, c_coords, attention_mask=None):
         """
         Calculate dihedral angle constraint loss using constrained learning
-        
+
         Args:
             sequence_embeddings: (batch_size, seq_len, hidden_dim) - model embeddings
             n_coords: (batch_size, seq_len, 3) - N atom coordinates
@@ -132,23 +132,23 @@ class ConstrainedDihedralAngleConstraint(nn.Module):
             attention_mask: (batch_size, seq_len) - attention mask to ignore padding
         """
         batch_size, seq_len, hidden_dim = sequence_embeddings.shape
-        
+
         # Compute true dihedral angles from coordinates
         cos_true_phi, cos_true_psi = compute_dihedral_angles_from_coordinates(n_coords, ca_coords, c_coords)
-        
+
         # Predict dihedral angles from embeddings
         cos_pred_phi, cos_pred_psi = self.predict_dihedral_angles(sequence_embeddings)
-        
+
         # Calculate constraint losses
         phi_loss = self.angle_consistency_loss(cos_true_phi, cos_pred_phi, attention_mask, angle_type='phi')
         psi_loss = self.angle_consistency_loss(cos_true_psi, cos_pred_psi, attention_mask, angle_type='psi')
-        
+
         # Combine constraint losses
         constraint_loss = phi_loss + psi_loss
-        
+
         # Return constraint loss (this will be used in the primal-dual optimization)
         return {
-            'constraint_loss': constraint_loss * self.constraint_weight,
+            'dihedral_loss': constraint_loss * self.constraint_weight,
             'phi_loss': phi_loss * self.constraint_weight,
             'psi_loss': psi_loss * self.constraint_weight,
             'cos_true_phi': cos_true_phi,
@@ -157,11 +157,11 @@ class ConstrainedDihedralAngleConstraint(nn.Module):
             'cos_pred_psi': cos_pred_psi,
             'raw_constraint_loss': constraint_loss
         }
-    
+
     def compute_lagrangian(self, primary_loss, constraint_loss):
         """
         Compute the Lagrangian for constrained optimization
-        
+
         Args:
             primary_loss: The main task loss (e.g., MLM loss)
             constraint_loss: The dihedral constraint loss
@@ -170,56 +170,56 @@ class ConstrainedDihedralAngleConstraint(nn.Module):
         lagrangian = primary_loss + \
                     (self.alpha / 2) * (self.s ** 2) + \
                     self.lam * (constraint_loss - self.epsilon - self.s)
-        
+
         return lagrangian
-    
+
     def update_slack_variables(self):
         """Project slack variables to be non-negative."""
         with torch.no_grad():
             self.s.clamp_(min=0.0)
-    
+
     def update_dual_variables(self):
         """Project dual variables to be non-negative."""
         with torch.no_grad():
             self.lam.clamp_(min=0.0)
-    
+
     def predict_dihedral_angles(self, embeddings):
         """
         Predict dihedral angles from sequence embeddings
         """
         batch_size, seq_len, hidden_dim = embeddings.shape
-        
+
         if seq_len < 2:
             # Not enough residues for dihedral angles
-            return (torch.empty(batch_size, 0, device=embeddings.device), 
+            return (torch.empty(batch_size, 0, device=embeddings.device),
                     torch.empty(batch_size, 0, device=embeddings.device))
-        
+
         # Predict phi angles (available from position 1 onwards)
         phi_logits = self.phi_predictor(embeddings[:, 1:, :]).squeeze(-1)  # (B, seq_len-1)
         cos_pred_phi = torch.tanh(phi_logits)  # Constrain to [-1, 1] range
-        
+
         # Predict psi angles (available up to position seq_len-2)
-        psi_logits = self.psi_predictor(embeddings[:, :-1, :]).squeeze(-1)  # (B, seq_len-1)  
+        psi_logits = self.psi_predictor(embeddings[:, :-1, :]).squeeze(-1)  # (B, seq_len-1)
         cos_pred_psi = torch.tanh(psi_logits)  # Constrain to [-1, 1] range
-        
+
         return cos_pred_phi, cos_pred_psi
-    
+
     def angle_consistency_loss(self, true_cos, pred_cos, attention_mask=None, angle_type='phi'):
         """
         Calculate loss between true and predicted angle cosines
         """
         if true_cos.numel() == 0 or pred_cos.numel() == 0:
             return torch.tensor(0.0, device=true_cos.device, requires_grad=True)
-        
+
         # Ensure shapes match
         min_len = min(true_cos.shape[1], pred_cos.shape[1])
         true_cos = true_cos[:, :min_len]
         pred_cos = pred_cos[:, :min_len]
-        
+
         # Calculate cosine difference loss (MSE for dihedral constraints)
         cos_diff = true_cos - pred_cos
         angle_loss = torch.mean(cos_diff ** 2)  # MSE for dihedral constraints
-        
+
         # Apply mask if available
         if attention_mask is not None:
             # Different mask positions depending on angle type
@@ -229,8 +229,128 @@ class ConstrainedDihedralAngleConstraint(nn.Module):
             else:  # psi
                 # Psi angles calculated up to position seq_len-2, so mask from position 0
                 valid_mask = attention_mask[:, :min_len].float()
-            
+
             if valid_mask.sum() > 0:
                 angle_loss = torch.sum((cos_diff ** 2) * valid_mask) / torch.sum(valid_mask)
-        
+
         return angle_loss
+
+
+class MultiConstraintLagrangian(nn.Module):
+    """
+    Implements constrained learning framework for multiple losses using primal-dual optimization.
+    Each loss type is constrained separately with its own Lagrange multipliers and epsilon values.
+    """
+    def __init__(self,
+                 dihedral_epsilon=0.076,
+                 gnn_epsilon=6.38,
+                 foldseek_epsilon=3.00,
+                 alpha=1.0,  # Penalty for slack variables
+                 max_batch_size=32):  # Maximum expected batch size
+        super().__init__()
+
+        # Epsilon values for different constraints
+        self.dihedral_epsilon = dihedral_epsilon
+        self.gnn_epsilon = gnn_epsilon
+        self.foldseek_epsilon = foldseek_epsilon
+        self.alpha = alpha
+        self.max_batch_size = max_batch_size
+
+        # Initialize primal and dual variables for each constraint type
+        # Slack variables for each constraint (non-negative) - global for each constraint type
+        self.s_dihedral = nn.Parameter(torch.zeros(1), requires_grad=True)
+        self.s_gnn = nn.Parameter(torch.zeros(1), requires_grad=True)
+        self.s_foldseek = nn.Parameter(torch.zeros(1), requires_grad=True)
+
+        # Dual variables (Lagrange multipliers, non-negative) for each constraint
+        # We initialize with maximum expected batch size, but will use only what's needed
+        self.lam_dihedral = nn.Parameter(torch.zeros(max_batch_size), requires_grad=True)
+        self.lam_gnn = nn.Parameter(torch.zeros(max_batch_size), requires_grad=True)
+        self.lam_foldseek = nn.Parameter(torch.zeros(max_batch_size), requires_grad=True)
+
+        # Initialize the multipliers to small positive values
+        with torch.no_grad():
+            self.lam_dihedral.fill_(0.01)
+            self.lam_gnn.fill_(0.01)
+            self.lam_foldseek.fill_(0.01)
+
+    def compute_lagrangian(self, primary_loss, dihedral_losses, gnn_losses, foldseek_losses, batch_size=None):
+        """
+        Compute the multi-constraint Lagrangian with per-sample constraints
+
+        Args:
+            primary_loss: The main task loss (e.g., MLM loss)
+            dihedral_losses: Per-sample dihedral constraint losses (tensor of shape [batch_size])
+            gnn_losses: Per-sample GNN alignment losses (tensor of shape [batch_size])
+            foldseek_losses: Per-sample foldseek alignment losses (tensor of shape [batch_size])
+            batch_size: Actual batch size (if None, inferred from input tensors)
+        """
+        if batch_size is None:
+            batch_size = dihedral_losses.size(0)
+
+        # Slice the parameters to the actual batch size
+        lam_dihedral_batch = self.lam_dihedral[:batch_size]
+        lam_gnn_batch = self.lam_gnn[:batch_size]
+        lam_foldseek_batch = self.lam_foldseek[:batch_size]
+
+        # Individual constraint terms for each protein in the batch
+        dihedral_constraint_terms = lam_dihedral_batch * (dihedral_losses - self.dihedral_epsilon)
+        gnn_constraint_terms = lam_gnn_batch * (gnn_losses - self.gnn_epsilon)
+        foldseek_constraint_terms = lam_foldseek_batch * (foldseek_losses - self.foldseek_epsilon)
+
+        # Sum the constraint terms (for this batch)
+        total_dihedral_constraint = torch.sum(dihedral_constraint_terms)
+        total_gnn_constraint = torch.sum(gnn_constraint_terms)
+        total_foldseek_constraint = torch.sum(foldseek_constraint_terms)
+
+        # Total Lagrangian
+        lagrangian = primary_loss + total_dihedral_constraint + total_gnn_constraint + total_foldseek_constraint
+
+        return lagrangian, {
+            'dihedral_constraint_terms': dihedral_constraint_terms,
+            'gnn_constraint_terms': gnn_constraint_terms,
+            'foldseek_constraint_terms': foldseek_constraint_terms,
+            'total_dihedral_constraint': total_dihedral_constraint,
+            'total_gnn_constraint': total_gnn_constraint,
+            'total_foldseek_constraint': total_foldseek_constraint
+        }
+
+    def update_dual_variables(self, dihedral_losses, gnn_losses, foldseek_losses, batch_size=None):
+        """
+        Update Lagrange multipliers using projected gradient ascent
+
+        Args:
+            dihedral_losses: Per-sample dihedral constraint losses
+            gnn_losses: Per-sample GNN alignment losses
+            foldseek_losses: Per-sample foldseek alignment losses
+            batch_size: Actual batch size (if None, inferred from input tensors)
+        """
+        if batch_size is None:
+            batch_size = dihedral_losses.size(0)
+
+        # Calculate violations for each constraint type
+        dihedral_violations = dihedral_losses - self.dihedral_epsilon
+        gnn_violations = gnn_losses - self.gnn_epsilon
+        foldseek_violations = foldseek_losses - self.foldseek_epsilon
+
+        # Update Lagrange multipliers using gradient ascent
+        # For each protein i: lambda_i = [lambda_i + eta * (loss_i - epsilon)]_+
+        with torch.no_grad():
+            # Update dihedral multipliers
+            self.lam_dihedral[:batch_size] = (self.lam_dihedral[:batch_size] +
+                                              1e-3 * dihedral_violations).clamp_(min=0.0)
+
+            # Update GNN multipliers
+            self.lam_gnn[:batch_size] = (self.lam_gnn[:batch_size] +
+                                         1e-3 * gnn_violations).clamp_(min=0.0)
+
+            # Update foldseek multipliers
+            self.lam_foldseek[:batch_size] = (self.lam_foldseek[:batch_size] +
+                                              1e-3 * foldseek_violations).clamp_(min=0.0)
+
+    def update_slack_variables(self):
+        """Project all slack variables to be non-negative."""
+        with torch.no_grad():
+            self.s_dihedral.clamp_(min=0.0)
+            self.s_gnn.clamp_(min=0.0)
+            self.s_foldseek.clamp_(min=0.0)
