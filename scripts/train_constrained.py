@@ -62,36 +62,26 @@ def train_epoch(model, dataloader, optimizer, scheduler, dihedral_constraints, d
     gnn_loss_total = 0
     foldseek_loss_total = 0
 
-    # Get gradient accumulation steps
     gradient_accumulation_steps = getattr(config.training, 'gradient_accumulation_steps', 1)
-
     progress_bar = tqdm(dataloader, desc="Training")
 
     for batch_idx, batch in enumerate(progress_bar):
-        # Move batch to device
         input_ids = batch['input_ids'].to(device)
         attention_mask = batch['attention_mask'].to(device)
         indices = batch['indices'].to(device)
+        n_coords = batch['n_coords'].to(device)
+        ca_coords = batch['ca_coords'].to(device)
+        c_coords = batch['c_coords'].to(device)
 
-        # Check if we have the new format with N, CA, C coordinates
-        if 'n_coords' in batch and 'ca_coords' in batch and 'c_coords' in batch:
-            n_coords = batch['n_coords'].to(device)
-            ca_coords = batch['ca_coords'].to(device)
-            c_coords = batch['c_coords'].to(device)
-        else:
-            raise KeyError("Dataset is in old format. Please re-run process_data.py with the --create_efficient_dataset flag to generate a new dataset with N, CA, C coordinates.")
-
+        batch_size = input_ids.size(0)
         has_structural_tokens = 'structural_tokens' in batch
         has_precomputed_embeddings = 'precomputed_embeddings' in batch
-        
         use_amp = scaler is not None
 
         with torch.amp.autocast('cuda', enabled=use_amp):
             outputs = model(input_ids=input_ids, attention_mask=attention_mask)
-            seq_output = outputs['sequence_output']
-            batch_size, seq_len, hidden_dim = seq_output.shape
             mask_ratio = 0.15
-            mask_positions = (torch.rand(batch_size, seq_len, device=device) < mask_ratio) & (attention_mask.bool())
+            mask_positions = (torch.rand(batch_size, outputs.sequence_output.size(1), device=device) < mask_ratio) & (attention_mask.bool())
             labels = input_ids.clone()
             labels[~mask_positions] = -100
             masked_input_ids = input_ids.clone()
@@ -101,16 +91,22 @@ def train_epoch(model, dataloader, optimizer, scheduler, dihedral_constraints, d
             seq_logits = model.lm_head(masked_outputs['sequence_output'])
             mlm_loss = nn.CrossEntropyLoss(ignore_index=-100)(seq_logits.view(-1, seq_logits.size(-1)), labels.view(-1))
 
-        with torch.amp.autocast('cuda', enabled=use_amp):
-            dihedral_results = dihedral_constraints(masked_outputs['sequence_output'], n_coords, ca_coords, c_coords, attention_mask)
-            dihedral_loss = dihedral_results['dihedral_loss']
-            
+            # Correctly calculate per-sample dihedral losses with masking
             cos_true_phi, cos_true_psi = compute_dihedral_angles_from_coordinates(n_coords, ca_coords, c_coords)
             cos_pred_phi, cos_pred_psi = dihedral_constraints.predict_dihedral_angles(masked_outputs['sequence_output'])
+
+            min_len_phi = min(cos_true_phi.shape[1], cos_pred_phi.shape[1])
+            phi_mask = attention_mask[:, 1:1+min_len_phi].float()
+            phi_loss_sq = (cos_true_phi[:, :min_len_phi] - cos_pred_phi[:, :min_len_phi]) ** 2
+            phi_loss_per_sample = (phi_loss_sq * phi_mask).sum(dim=1) / phi_mask.sum(dim=1).clamp(min=1.0)
+
+            min_len_psi = min(cos_true_psi.shape[1], cos_pred_psi.shape[1])
+            psi_mask = attention_mask[:, :min_len_psi].float()
+            psi_loss_sq = (cos_true_psi[:, :min_len_psi] - cos_pred_psi[:, :min_len_psi]) ** 2
+            psi_loss_per_sample = (psi_loss_sq * psi_mask).sum(dim=1) / psi_mask.sum(dim=1).clamp(min=1.0)
             
-            total_phi_loss = torch.mean((cos_true_phi - cos_pred_phi) ** 2, dim=1)
-            total_psi_loss = torch.mean((cos_true_psi - cos_pred_psi) ** 2, dim=1)
-            per_sample_dihedral_losses = total_phi_loss + total_psi_loss
+            per_sample_dihedral_losses = phi_loss_per_sample + psi_loss_per_sample
+            dihedral_loss = per_sample_dihedral_losses.mean() # For logging, get the batch average
 
             struct_align_loss = torch.tensor(0.0, device=device)
             gnn_loss = torch.tensor(0.0, device=device)
@@ -120,11 +116,8 @@ def train_epoch(model, dataloader, optimizer, scheduler, dihedral_constraints, d
 
             if structure_alignment_loss is not None and has_structural_tokens:
                 structure_tokens = batch['structural_tokens'].to(device)
-                if has_precomputed_embeddings:
-                    pGNN_embeddings = batch['precomputed_embeddings'].to(device)
-                else:
-                    with torch.no_grad():
-                        pGNN_embeddings = frozen_gnn(n_coords, ca_coords, c_coords)
+                with torch.no_grad():
+                    pGNN_embeddings = frozen_gnn(n_coords, ca_coords, c_coords)
                 
                 pLM_embeddings = masked_outputs['sequence_output']
                 struct_align_results = structure_alignment_loss(pLM_embeddings, pGNN_embeddings, structure_tokens, attention_mask)
@@ -144,7 +137,6 @@ def train_epoch(model, dataloader, optimizer, scheduler, dihedral_constraints, d
                 )
                 combined_loss = lagrangian / gradient_accumulation_steps
             else:
-                # Fallback for non-constrained setup
                 combined_loss = (mlm_loss + dihedral_loss + struct_align_loss) / gradient_accumulation_steps
 
         if config.logging.use_wandb:
