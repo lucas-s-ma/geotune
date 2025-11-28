@@ -20,6 +20,7 @@ from tqdm import tqdm
 import wandb
 import argparse
 from omegaconf import OmegaConf
+import matplotlib.pyplot as plt
 
 from models.geotune_esm_model import load_esm_with_lora
 from utils.constrained_dihedral_utils import ConstrainedDihedralAngleConstraint, MultiConstraintLagrangian, compute_dihedral_angles_from_coordinates
@@ -44,6 +45,9 @@ def parse_args():
     parser.add_argument("--lora_alpha", type=int, default=16, help="LoRA alpha parameter")
     parser.add_argument("--dist_threshold", type=float, default=15.0, help="Distance threshold for constraints")
     parser.add_argument("--seed", type=int, default=42, help="Random seed")
+    parser.add_argument("--dihedral_epsilon", type=float, default=0.076, help="Epsilon for dihedral constraint")
+    parser.add_argument("--gnn_epsilon", type=float, default=6.38, help="Epsilon for GNN loss constraint")
+    parser.add_argument("--foldseek_epsilon", type=float, default=3.00, help="Epsilon for foldseek loss constraint")
 
     return parser.parse_args()
 
@@ -64,13 +68,10 @@ def train_epoch(model, dataloader, optimizer, scheduler, dihedral_constraints, d
     progress_bar = tqdm(dataloader, desc="Training")
 
     for batch_idx, batch in enumerate(progress_bar):
-        # Log batch timing
-        import time
-        batch_start_time = time.time()
-
         # Move batch to device
         input_ids = batch['input_ids'].to(device)
         attention_mask = batch['attention_mask'].to(device)
+        indices = batch['indices'].to(device)
 
         # Check if we have the new format with N, CA, C coordinates
         if 'n_coords' in batch and 'ca_coords' in batch and 'c_coords' in batch:
@@ -78,271 +79,119 @@ def train_epoch(model, dataloader, optimizer, scheduler, dihedral_constraints, d
             ca_coords = batch['ca_coords'].to(device)
             c_coords = batch['c_coords'].to(device)
         else:
-            # Old format detected - this should not happen if dataset was processed with new code
-            # But we'll try to convert if possible
-            print("WARNING: Old dataset format detected. Please re-process your data using the new format.")
-            print("Expected 'n_coords', 'ca_coords', 'c_coords' but found other keys.")
-            print(f"Available keys: {list(batch.keys())}")
             raise KeyError("Dataset is in old format. Please re-run process_data.py with the --create_efficient_dataset flag to generate a new dataset with N, CA, C coordinates.")
 
-        # Check if structural tokens are available in the batch
         has_structural_tokens = 'structural_tokens' in batch
-
-        # Check if pre-computed embeddings are available
         has_precomputed_embeddings = 'precomputed_embeddings' in batch
-
-        # Log tensor shapes for debugging
-        if batch_idx == 0:
-            actual_seq_lengths = torch.sum(attention_mask, dim=1)
-            print(f"Input IDs shape: {input_ids.shape}")
-            print(f"Attention mask shape: {attention_mask.shape}")
-            print(f"N coordinates shape: {n_coords.shape}")
-            print(f"CA coordinates shape: {ca_coords.shape}")
-            print(f"C coordinates shape: {c_coords.shape}")
-            print(f"Structural tokens available: {has_structural_tokens}")
-            print(f"Pre-computed embeddings available: {has_precomputed_embeddings}")
-            if has_structural_tokens:
-                print(f"Structural tokens shape: {batch['structural_tokens'].shape}")
-            if has_precomputed_embeddings:
-                print(f"Pre-computed embeddings shape: {batch['precomputed_embeddings'].shape}")
-            print(f"Actual sequence lengths in batch: {actual_seq_lengths.tolist()}")
-            print(f"Max sequence length in batch: {actual_seq_lengths.max().item()}")
-
-            # Warn if any sequence is very long (>200 residues)
-            max_len = actual_seq_lengths.max().item()
-            if max_len > 200:
-                print(f"⚠️  WARNING: Found sequence of length {max_len}, this may cause training to be very slow.")
-                print(f"   Consider using --max_seq_len 200 or shorter for faster training during debugging.")
-
-        # Use mixed precision if scaler is provided
+        
         use_amp = scaler is not None
 
-        # Forward pass with automatic mixed precision
         with torch.amp.autocast('cuda', enabled=use_amp):
-            outputs = model(
-                input_ids=input_ids,
-                attention_mask=attention_mask
-            )
-
-            # Calculate MLM loss (masked language modeling)
-            # For this example, we'll create masked tokens randomly
+            outputs = model(input_ids=input_ids, attention_mask=attention_mask)
             seq_output = outputs['sequence_output']
-
-            # Create random masks for MLM task
             batch_size, seq_len, hidden_dim = seq_output.shape
-            mask_ratio = 0.15  # Standard ESM masking ratio
-
-            # Create mask for masking tokens (ignore padding positions)
+            mask_ratio = 0.15
             mask_positions = (torch.rand(batch_size, seq_len, device=device) < mask_ratio) & (attention_mask.bool())
-
-            # Clone input_ids to create labels
             labels = input_ids.clone()
-            labels[~mask_positions] = -100  # Ignore non-masked positions in loss
-
-            # Create masked input
+            labels[~mask_positions] = -100
             masked_input_ids = input_ids.clone()
-            masked_input_ids[mask_positions] = 32  # Use <mask> token ID (32 in ESM2)
+            masked_input_ids[mask_positions] = 32
 
-            # Recompute with masked inputs to get predictions for masked positions
-            masked_outputs = model(
-                input_ids=masked_input_ids,
-                attention_mask=attention_mask
-            )
-
-            # Calculate MLM loss
+            masked_outputs = model(input_ids=masked_input_ids, attention_mask=attention_mask)
             seq_logits = model.lm_head(masked_outputs['sequence_output'])
             mlm_loss = nn.CrossEntropyLoss(ignore_index=-100)(seq_logits.view(-1, seq_logits.size(-1)), labels.view(-1))
 
-        # Calculate dihedral angle constraint loss using constrained learning
-        # Add timing for constraint calculation to identify bottlenecks
-        constraint_start_time = time.time()
-
         with torch.amp.autocast('cuda', enabled=use_amp):
-            # Get dihedral constraint results
-            dihedral_results = dihedral_constraints(
-                masked_outputs['sequence_output'],
-                n_coords,
-                ca_coords,
-                c_coords,
-                attention_mask
-            )
+            dihedral_results = dihedral_constraints(masked_outputs['sequence_output'], n_coords, ca_coords, c_coords, attention_mask)
             dihedral_loss = dihedral_results['dihedral_loss']
-            raw_constraint_loss = dihedral_results['raw_constraint_loss']
-            # Calculate per-sample dihedral losses instead of aggregated
-            per_sample_dihedral_losses = torch.zeros(batch_size, device=device)
-            if raw_constraint_loss.numel() > 0:
-                # Calculate per-sample losses by averaging over sequence length per sample
-                # We need to compute per-sample losses differently
-                # Get phi and psi losses per sample
-                cos_true_phi, cos_true_psi = compute_dihedral_angles_from_coordinates(n_coords, ca_coords, c_coords)
-                cos_pred_phi, cos_pred_psi = dihedral_constraints.predict_dihedral_angles(masked_outputs['sequence_output'])
+            
+            cos_true_phi, cos_true_psi = compute_dihedral_angles_from_coordinates(n_coords, ca_coords, c_coords)
+            cos_pred_phi, cos_pred_psi = dihedral_constraints.predict_dihedral_angles(masked_outputs['sequence_output'])
+            
+            total_phi_loss = torch.mean((cos_true_phi - cos_pred_phi) ** 2, dim=1)
+            total_psi_loss = torch.mean((cos_true_psi - cos_pred_psi) ** 2, dim=1)
+            per_sample_dihedral_losses = total_phi_loss + total_psi_loss
 
-                # Calculate per-sample dihedral losses
-                phi_loss_per_sample = dihedral_constraints.angle_consistency_loss(cos_true_phi, cos_pred_phi, attention_mask, angle_type='phi')
-                psi_loss_per_sample = dihedral_constraints.angle_consistency_loss(cos_true_psi, cos_pred_psi, attention_mask, angle_type='psi')
-
-                # Calculate per-sample dihedral losses by averaging over sequence length
-                valid_lengths = attention_mask.sum(dim=1)  # Sequence lengths per sample
-                total_phi_loss = torch.mean((cos_true_phi - cos_pred_phi) ** 2, dim=1)  # Average across sequence length
-                total_psi_loss = torch.mean((cos_true_psi - cos_pred_psi) ** 2, dim=1)  # Average across sequence length
-                per_sample_dihedral_losses = total_phi_loss + total_psi_loss
-
-            constraint_time = time.time() - constraint_start_time
-
-            # Calculate structure alignment loss if structural tokens are available
-            struct_align_loss = torch.tensor(0.0, device=device, requires_grad=True)
-            gnn_loss = torch.tensor(0.0, device=device, requires_grad=True)
-            foldseek_loss = torch.tensor(0.0, device=device, requires_grad=True)
-
-            # Initialize per-sample losses
+            struct_align_loss = torch.tensor(0.0, device=device)
+            gnn_loss = torch.tensor(0.0, device=device)
+            foldseek_loss = torch.tensor(0.0, device=device)
             per_sample_gnn_losses = torch.zeros(batch_size, device=device)
             per_sample_foldseek_losses = torch.zeros(batch_size, device=device)
-            per_sample_dihedral_losses_final = torch.zeros(batch_size, device=device)
 
             if structure_alignment_loss is not None and has_structural_tokens:
-                # Get structural tokens
                 structure_tokens = batch['structural_tokens'].to(device)
-
-                # Use pre-computed embeddings if available, otherwise generate using frozen GNN
                 if has_precomputed_embeddings:
-                    # Use pre-computed embeddings
                     pGNN_embeddings = batch['precomputed_embeddings'].to(device)
                 else:
-                    # Generate pGNN embeddings using the frozen GNN (inference only)
                     with torch.no_grad():
                         pGNN_embeddings = frozen_gnn(n_coords, ca_coords, c_coords)
-
-                # Get pLM embeddings
+                
                 pLM_embeddings = masked_outputs['sequence_output']
-
-                # Calculate structure alignment loss
-                struct_align_results = structure_alignment_loss(
-                    pLM_embeddings=pLM_embeddings,
-                    pGNN_embeddings=pGNN_embeddings,
-                    structure_tokens=structure_tokens,
-                    attention_mask=attention_mask
-                )
+                struct_align_results = structure_alignment_loss(pLM_embeddings, pGNN_embeddings, structure_tokens, attention_mask)
                 struct_align_loss = struct_align_results['total_loss']
                 gnn_loss = struct_align_results.get('latent_loss', torch.tensor(0.0, device=device))
                 foldseek_loss = struct_align_results.get('physical_loss', torch.tensor(0.0, device=device))
-
-                # Extract per-sample losses for GNN and foldseek
                 per_sample_gnn_losses = struct_align_results.get('latent_loss_per_sample', torch.zeros(batch_size, device=device))
                 per_sample_foldseek_losses = struct_align_results.get('physical_loss_per_sample', torch.zeros(batch_size, device=device))
 
-                # For foldseek loss, it's typically computed per amino acid then averaged per protein
-                # So we need to aggregate it per sample based on sequence length
-
-            # Use multi-constraint Lagrangian if it exists, otherwise use original approach
             if multi_constraint_lagrangian is not None:
-                # Compute the multi-constraint Lagrangian with per-sample losses
-                lagrangian, lagrangian_components = multi_constraint_lagrangian.compute_lagrangian(
+                lagrangian, _ = multi_constraint_lagrangian.compute_lagrangian(
                     primary_loss=mlm_loss,
                     dihedral_losses=per_sample_dihedral_losses,
                     gnn_losses=per_sample_gnn_losses,
                     foldseek_losses=per_sample_foldseek_losses,
-                    batch_size=batch_size
+                    indices=indices
                 )
+                combined_loss = lagrangian / gradient_accumulation_steps
             else:
-                # Fallback to single constraint approach
-                lagrangian = dihedral_constraints.compute_lagrangian(
-                    primary_loss=mlm_loss,
-                    constraint_loss=raw_constraint_loss  # Use raw constraint loss without weight scaling
-                )
+                # Fallback for non-constrained setup
+                combined_loss = (mlm_loss + dihedral_loss + struct_align_loss) / gradient_accumulation_steps
 
-            # Scale loss for gradient accumulation
-            combined_loss = lagrangian / gradient_accumulation_steps
-
-        # Log loss components immediately to wandb for debugging
-        # Note: combined_loss is scaled by gradient_accumulation_steps, so multiply back for logging
         if config.logging.use_wandb:
+            log_data = {
+                'train_batch_loss': combined_loss.item() * gradient_accumulation_steps,
+                'train_batch_mlm_loss': mlm_loss.item(),
+                'train_batch_dihedral_loss': dihedral_loss.item(),
+                'train_batch_gnn_loss': gnn_loss.item(),
+                'train_batch_foldseek_loss': foldseek_loss.item(),
+                'learning_rate': scheduler.get_last_lr()[0],
+            }
             if multi_constraint_lagrangian is not None:
-                # Log multi-constraint components
-                wandb.log({
-                    'train_batch_loss': combined_loss.item() * gradient_accumulation_steps,
-                    'train_batch_mlm_loss': mlm_loss.item(),
-                    'train_batch_dihedral_loss': dihedral_loss.item(),
-                    'train_batch_gnn_loss': gnn_loss.item(),
-                    'train_batch_foldseek_loss': foldseek_loss.item(),
-                    'train_batch_struct_align_loss': struct_align_loss.item(),
-                    'learning_rate': scheduler.get_last_lr()[0],
-                    'batch_idx': batch_idx,
+                avg_lam_dih, avg_lam_gnn, avg_lam_fs = multi_constraint_lagrangian.get_average_lambdas()
+                log_data.update({
+                    'avg_lambda_dihedral': avg_lam_dih,
+                    'avg_lambda_gnn': avg_lam_gnn,
+                    'avg_lambda_foldseek': avg_lam_fs,
                 })
-            else:
-                # Log single constraint components
-                wandb.log({
-                    'train_batch_loss': combined_loss.item() * gradient_accumulation_steps,
-                    'train_batch_mlm_loss': mlm_loss.item(),
-                    'train_batch_dihedral_loss': dihedral_loss.item(),
-                    'train_batch_struct_align_loss': struct_align_loss.item(),
-                    'learning_rate': scheduler.get_last_lr()[0],
-                    'batch_idx': batch_idx,
-                })
+            wandb.log(log_data)
 
-        # Backward pass with gradient accumulation and mixed precision (for primal update)
         if scaler is not None:
-            # Mixed precision backward
             scaler.scale(combined_loss).backward()
         else:
-            # Standard backward
             combined_loss.backward()
 
-        # Only update weights every gradient_accumulation_steps
         if (batch_idx + 1) % gradient_accumulation_steps == 0:
-            # Unscale gradients and clip them
             if scaler is not None:
                 scaler.unscale_(optimizer)
-
-            # Clip gradients
             torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
-
-            # Log gradient norms for debugging
-            if batch_idx % 10 == 0:
-                total_norm = 0
-                param_count = 0
-                for p in model.parameters():
-                    if p.grad is not None:
-                        param_count += 1
-                        param_norm = p.grad.data.norm(2)
-                        total_norm += param_norm.item() ** 2
-                total_norm = total_norm ** (1. / 2)
-
-                if config.logging.use_wandb:
-                    wandb.log({
-                        'grad_norm': total_norm,
-                        'param_count_with_grad': param_count
-                    })
-
-            # Primal optimizer step
+            
             if scaler is not None:
                 scaler.step(optimizer)
                 scaler.update()
             else:
                 optimizer.step()
-
+            
             scheduler.step()
             optimizer.zero_grad()
 
-            # Dual optimizer step (for Lagrange multipliers)
-            # Calculate dual loss (negative of lagrangian for maximization)
-            with torch.no_grad():
-                if multi_constraint_lagrangian is not None:
-                    # Update the dual variables (lambda multipliers) using the per-sample losses
-                    multi_constraint_lagrangian.update_dual_variables(
-                        dihedral_losses=per_sample_dihedral_losses,
-                        gnn_losses=per_sample_gnn_losses,
-                        foldseek_losses=per_sample_foldseek_losses,
-                        batch_size=batch_size
-                    )
-                    # Project the slack variables to be non-negative
-                    multi_constraint_lagrangian.update_slack_variables()
-                else:
-                    # Project the slack and dual variables to be non-negative (original approach)
-                    dihedral_constraints.update_slack_variables()
-                    dihedral_constraints.update_dual_variables()
+            if multi_constraint_lagrangian is not None:
+                multi_constraint_lagrangian.update_dual_variables(
+                    per_sample_dihedral_losses,
+                    per_sample_gnn_losses,
+                    per_sample_foldseek_losses,
+                    indices
+                )
 
-        # Update progress bar
-        # Note: combined_loss is scaled by gradient_accumulation_steps, so multiply back
         total_loss += combined_loss.item() * gradient_accumulation_steps
         dihedral_loss_total += dihedral_loss.item()
         mlm_loss_total += mlm_loss.item()
@@ -350,59 +199,11 @@ def train_epoch(model, dataloader, optimizer, scheduler, dihedral_constraints, d
         gnn_loss_total += gnn_loss.item()
         foldseek_loss_total += foldseek_loss.item()
 
-        # Calculate batch processing time
-        batch_time = time.time() - batch_start_time
-
-        if multi_constraint_lagrangian is not None:
-            if batch_size > 0:
-                avg_dihedral_lambda = multi_constraint_lagrangian.lam_dihedral[:batch_size].mean().item()
-                avg_gnn_lambda = multi_constraint_lagrangian.lam_gnn[:batch_size].mean().item()
-                avg_foldseek_lambda = multi_constraint_lagrangian.lam_foldseek[:batch_size].mean().item()
-
-                progress_bar.set_postfix({
-                    'Loss': f'{combined_loss.item() * gradient_accumulation_steps:.4f}',
-                    'MLM': f'{mlm_loss.item():.4f}',
-                    'Dihedral': f'{dihedral_loss.item():.4f}',
-                    'GNN': f'{gnn_loss.item():.4f}',
-                    'FoldSeek': f'{foldseek_loss.item():.4f}',
-                    'StructAlign': f'{struct_align_loss.item():.4f}',
-                    'S_dih': f'{multi_constraint_lagrangian.s_dihedral.item():.4f}',
-                    'S_gnn': f'{multi_constraint_lagrangian.s_gnn.item():.4f}',
-                    'S_fs': f'{multi_constraint_lagrangian.s_foldseek.item():.4f}',
-                    'L_dih': f'{avg_dihedral_lambda:.3f}',
-                    'L_gnn': f'{avg_gnn_lambda:.3f}',
-                    'L_fs': f'{avg_foldseek_lambda:.3f}',
-                    'LR': f'{scheduler.get_last_lr()[0]:.2e}',
-                    'Time': f'{batch_time:.2f}s',
-                    'CnstTime': f'{constraint_time:.2f}s'
-                })
-            else:
-                progress_bar.set_postfix({
-                    'Loss': f'{combined_loss.item() * gradient_accumulation_steps:.4f}',
-                    'MLM': f'{mlm_loss.item():.4f}',
-                    'Dihedral': f'{dihedral_loss.item():.4f}',
-                    'GNN': f'{gnn_loss.item():.4f}',
-                    'FoldSeek': f'{foldseek_loss.item():.4f}',
-                    'StructAlign': f'{struct_align_loss.item():.4f}',
-                    'S_dih': f'{multi_constraint_lagrangian.s_dihedral.item():.4f}',
-                    'S_gnn': f'{multi_constraint_lagrangian.s_gnn.item():.4f}',
-                    'S_fs': f'{multi_constraint_lagrangian.s_foldseek.item():.4f}',
-                    'LR': f'{scheduler.get_last_lr()[0]:.2e}',
-                    'Time': f'{batch_time:.2f}s',
-                    'CnstTime': f'{constraint_time:.2f}s'
-                })
-        else:
-            progress_bar.set_postfix({
-                'Loss': f'{combined_loss.item() * gradient_accumulation_steps:.4f}',
-                'MLM': f'{mlm_loss.item():.4f}',
-                'Dihedral': f'{dihedral_loss.item():.4f}',
-                'StructAlign': f'{struct_align_loss.item():.4f}',
-                'Slack': f'{dihedral_constraints.s.item():.4f}',
-                'Lambda': f'{dihedral_constraints.lam.item():.4f}',
-                'LR': f'{scheduler.get_last_lr()[0]:.2e}',
-                'Time': f'{batch_time:.2f}s',
-                'CnstTime': f'{constraint_time:.2f}s'
-            })
+        progress_bar.set_postfix({
+            'Loss': f'{combined_loss.item() * gradient_accumulation_steps:.4f}',
+            'MLM': f'{mlm_loss.item():.4f}',
+            'Dihedral': f'{dihedral_loss.item():.4f}',
+        })
 
     avg_loss = total_loss / len(dataloader)
     avg_dihedral_loss = dihedral_loss_total / len(dataloader)
@@ -411,199 +212,88 @@ def train_epoch(model, dataloader, optimizer, scheduler, dihedral_constraints, d
     avg_gnn_loss = gnn_loss_total / len(dataloader)
     avg_foldseek_loss = foldseek_loss_total / len(dataloader)
 
-    # Log epoch averages
     if config.logging.use_wandb:
-        if multi_constraint_lagrangian is not None:
-            wandb.log({
-                'epoch_avg_loss': avg_loss,
-                'epoch_avg_mlm_loss': avg_mlm_loss,
-                'epoch_avg_dihedral_loss': avg_dihedral_loss,
-                'epoch_avg_gnn_loss': avg_gnn_loss,
-                'epoch_avg_foldseek_loss': avg_foldseek_loss,
-                'epoch_avg_struct_align_loss': avg_struct_align_loss,
-            })
-        else:
-            wandb.log({
-                'epoch_avg_loss': avg_loss,
-                'epoch_avg_mlm_loss': avg_mlm_loss,
-                'epoch_avg_dihedral_loss': avg_dihedral_loss,
-                'epoch_avg_struct_align_loss': avg_struct_align_loss,
-            })
+        wandb.log({
+            'epoch_avg_train_loss': avg_loss,
+            'epoch_avg_train_mlm_loss': avg_mlm_loss,
+            'epoch_avg_train_dihedral_loss': avg_dihedral_loss,
+            'epoch_avg_train_gnn_loss': avg_gnn_loss,
+            'epoch_avg_train_foldseek_loss': avg_foldseek_loss,
+        })
 
     return avg_loss, avg_mlm_loss, avg_dihedral_loss, avg_struct_align_loss, avg_gnn_loss, avg_foldseek_loss
 
 
 def validate(model, dataloader, dihedral_constraints, device, config, structure_alignment_loss=None, frozen_gnn=None, multi_constraint_lagrangian=None):
-    """Validate the model with constrained dihedral angle learning and multiple constraint types"""
+    """Validate the model by calculating individual loss components without the Lagrangian."""
     model.eval()
-    total_loss = 0
-    dihedral_loss_total = 0
-    mlm_loss_total = 0
-    structure_alignment_loss_total = 0
-    gnn_loss_total = 0
-    foldseek_loss_total = 0
+    total_mlm_loss = 0
+    total_dihedral_loss = 0
+    total_gnn_loss = 0
+    total_foldseek_loss = 0
+    total_samples = 0
 
     with torch.no_grad():
-        for batch_idx, batch in enumerate(tqdm(dataloader, desc="Validating")):
-            # Move batch to device
+        for batch in tqdm(dataloader, desc="Validating"):
             input_ids = batch['input_ids'].to(device)
             attention_mask = batch['attention_mask'].to(device)
             n_coords = batch['n_coords'].to(device)
             ca_coords = batch['ca_coords'].to(device)
             c_coords = batch['c_coords'].to(device)
+            
+            batch_size = input_ids.size(0)
+            total_samples += batch_size
 
-            # Check if structural tokens are available in the batch
-            has_structural_tokens = 'structural_tokens' in batch
-
-            # Check if pre-computed embeddings are available
-            has_precomputed_embeddings = 'precomputed_embeddings' in batch
-
-            # Forward pass
-            outputs = model(
-                input_ids=input_ids,
-                attention_mask=attention_mask
-            )
-
-            # Create random masks for MLM task
+            # Forward pass for MLM loss
+            outputs = model(input_ids=input_ids, attention_mask=attention_mask)
             seq_output = outputs['sequence_output']
-            batch_size, seq_len, hidden_dim = seq_output.shape
             mask_ratio = 0.15
-
-            mask_positions = (torch.rand(batch_size, seq_len, device=device) < mask_ratio) & (attention_mask.bool())
+            mask_positions = (torch.rand(batch_size, seq_output.size(1), device=device) < mask_ratio) & (attention_mask.bool())
             labels = input_ids.clone()
             labels[~mask_positions] = -100
-
             masked_input_ids = input_ids.clone()
-            masked_input_ids[mask_positions] = 32  # Use <mask> token ID (32 in ESM2)
-
-            masked_outputs = model(
-                input_ids=masked_input_ids,
-                attention_mask=attention_mask
-            )
-
-            # Calculate MLM loss
+            masked_input_ids[mask_positions] = 32
+            
+            masked_outputs = model(input_ids=masked_input_ids, attention_mask=attention_mask)
             seq_logits = model.lm_head(masked_outputs['sequence_output'])
             mlm_loss = nn.CrossEntropyLoss(ignore_index=-100)(seq_logits.view(-1, seq_logits.size(-1)), labels.view(-1))
+            total_mlm_loss += mlm_loss.item() * batch_size
 
-            # Calculate dihedral constraint loss
-            dihedral_results = dihedral_constraints(
-                masked_outputs['sequence_output'],
-                n_coords,
-                ca_coords,
-                c_coords,
-                attention_mask
-            )
+            # Dihedral loss
+            dihedral_results = dihedral_constraints(masked_outputs['sequence_output'], n_coords, ca_coords, c_coords, attention_mask)
+            total_dihedral_loss += dihedral_results['dihedral_loss'].item() * batch_size
 
-            dihedral_loss = dihedral_results['dihedral_loss']
-            raw_constraint_loss = dihedral_results['raw_constraint_loss']
-
-            # Calculate per-sample dihedral losses for validation
-            per_sample_dihedral_losses = torch.zeros(batch_size, device=device)
-            if raw_constraint_loss.numel() > 0:
-                # Get phi and psi losses per sample
-                cos_true_phi, cos_true_psi = compute_dihedral_angles_from_coordinates(n_coords, ca_coords, c_coords)
-                cos_pred_phi, cos_pred_psi = dihedral_constraints.predict_dihedral_angles(masked_outputs['sequence_output'])
-
-                # Calculate per-sample dihedral losses by averaging over sequence length
-                total_phi_loss = torch.mean((cos_true_phi - cos_pred_phi) ** 2, dim=1)  # Average across sequence length
-                total_psi_loss = torch.mean((cos_true_psi - cos_pred_psi) ** 2, dim=1)  # Average across sequence length
-                per_sample_dihedral_losses = total_phi_loss + total_psi_loss
-
-            # Calculate structure alignment loss if structural tokens are available
-            struct_align_loss = torch.tensor(0.0, device=device)
-            gnn_loss = torch.tensor(0.0, device=device)
-            foldseek_loss = torch.tensor(0.0, device=device)
-
-            # Initialize per-sample losses
-            per_sample_gnn_losses = torch.zeros(batch_size, device=device)
-            per_sample_foldseek_losses = torch.zeros(batch_size, device=device)
-
-            if structure_alignment_loss is not None and has_structural_tokens and 'structural_tokens' in batch:
-                # Get structural tokens
+            # Structure alignment losses
+            if structure_alignment_loss is not None and 'structural_tokens' in batch:
                 structure_tokens = batch['structural_tokens'].to(device)
-
-                # Use pre-computed embeddings if available, otherwise generate using frozen GNN
-                if has_precomputed_embeddings:
-                    # Use pre-computed embeddings
-                    pGNN_embeddings = batch['precomputed_embeddings'].to(device)
-                else:
-                    # Generate pGNN embeddings using the frozen GNN (inference only)
-                    with torch.no_grad():
-                        pGNN_embeddings = frozen_gnn(n_coords, ca_coords, c_coords)
-
-                # Get pLM embeddings
+                pGNN_embeddings = frozen_gnn(n_coords, ca_coords, c_coords)
                 pLM_embeddings = masked_outputs['sequence_output']
-
-                # Calculate structure alignment loss
-                struct_align_results = structure_alignment_loss(
-                    pLM_embeddings=pLM_embeddings,
-                    pGNN_embeddings=pGNN_embeddings,
-                    structure_tokens=structure_tokens,
-                    attention_mask=attention_mask
-                )
-                struct_align_loss = struct_align_results['total_loss']
+                
+                struct_align_results = structure_alignment_loss(pLM_embeddings, pGNN_embeddings, structure_tokens, attention_mask)
                 gnn_loss = struct_align_results.get('latent_loss', torch.tensor(0.0, device=device))
                 foldseek_loss = struct_align_results.get('physical_loss', torch.tensor(0.0, device=device))
+                
+                total_gnn_loss += gnn_loss.item() * batch_size
+                total_foldseek_loss += foldseek_loss.item() * batch_size
 
-                # Extract per-sample losses for GNN and foldseek
-                per_sample_gnn_losses = struct_align_results.get('latent_loss_per_sample', torch.zeros(batch_size, device=device))
-                per_sample_foldseek_losses = struct_align_results.get('physical_loss_per_sample', torch.zeros(batch_size, device=device))
+    avg_mlm_loss = total_mlm_loss / total_samples
+    avg_dihedral_loss = total_dihedral_loss / total_samples
+    avg_gnn_loss = total_gnn_loss / total_samples
+    avg_foldseek_loss = total_foldseek_loss / total_samples
+    
+    # The total validation loss is a simple sum of the components
+    avg_val_loss = avg_mlm_loss + avg_dihedral_loss + avg_gnn_loss + avg_foldseek_loss
 
-            # Use multi-constraint Lagrangian if it exists, otherwise use original approach
-            if multi_constraint_lagrangian is not None:
-                # Calculate Lagrangian for validation with multiple constraints using per-sample losses
-                lagrangian, lagrangian_components = multi_constraint_lagrangian.compute_lagrangian(
-                    primary_loss=mlm_loss,
-                    dihedral_losses=per_sample_dihedral_losses,
-                    gnn_losses=per_sample_gnn_losses,
-                    foldseek_losses=per_sample_foldseek_losses,
-                    batch_size=batch_size
-                )
-            else:
-                # Fallback to single constraint approach
-                lagrangian = dihedral_constraints.compute_lagrangian(
-                    primary_loss=mlm_loss,
-                    constraint_loss=raw_constraint_loss
-                )
+    if config.logging.use_wandb:
+        wandb.log({
+            'epoch_avg_val_loss': avg_val_loss,
+            'epoch_avg_val_mlm_loss': avg_mlm_loss,
+            'epoch_avg_val_dihedral_loss': avg_dihedral_loss,
+            'epoch_avg_val_gnn_loss': avg_gnn_loss,
+            'epoch_avg_val_foldseek_loss': avg_foldseek_loss,
+        })
 
-            combined_loss = lagrangian
-
-            total_loss += combined_loss.item()
-            dihedral_loss_total += dihedral_loss.item()
-            mlm_loss_total += mlm_loss.item()
-            structure_alignment_loss_total += struct_align_loss.item()
-            gnn_loss_total += gnn_loss.item()
-            foldseek_loss_total += foldseek_loss.item()
-
-            # Log validation metrics to wandb
-            if config.logging.use_wandb and batch_idx % 10 == 0:
-                if multi_constraint_lagrangian is not None:
-                    wandb.log({
-                        'val_batch_loss': combined_loss.item(),
-                        'val_batch_mlm_loss': mlm_loss.item(),
-                        'val_batch_dihedral_loss': dihedral_loss.item(),
-                        'val_batch_gnn_loss': gnn_loss.item(),
-                        'val_batch_foldseek_loss': foldseek_loss.item(),
-                        'val_batch_struct_align_loss': struct_align_loss.item(),
-                        'val_batch': batch_idx
-                    })
-                else:
-                    wandb.log({
-                        'val_batch_loss': combined_loss.item(),
-                        'val_batch_mlm_loss': mlm_loss.item(),
-                        'val_batch_dihedral_loss': dihedral_loss.item(),
-                        'val_batch_struct_align_loss': struct_align_loss.item(),
-                        'val_batch': batch_idx
-                    })
-
-    avg_loss = total_loss / len(dataloader)
-    avg_dihedral_loss = dihedral_loss_total / len(dataloader)
-    avg_mlm_loss = mlm_loss_total / len(dataloader)
-    avg_struct_align_loss = structure_alignment_loss_total / len(dataloader)
-    avg_gnn_loss = gnn_loss_total / len(dataloader)
-    avg_foldseek_loss = foldseek_loss_total / len(dataloader)
-
-    return avg_loss, avg_mlm_loss, avg_dihedral_loss, avg_struct_align_loss, avg_gnn_loss, avg_foldseek_loss
+    return avg_val_loss, avg_mlm_loss, avg_dihedral_loss, (avg_gnn_loss + avg_foldseek_loss), avg_gnn_loss, avg_foldseek_loss
 
 
 def main():
@@ -700,9 +390,9 @@ def main():
 
     # Initialize multi-constraint Lagrangian for primal-dual optimization
     multi_constraint_lagrangian = MultiConstraintLagrangian(
-        dihedral_epsilon=0.076,  # Epsilon for dihedral constraint
-        gnn_epsilon=6.38,        # Epsilon for GNN loss constraint
-        foldseek_epsilon=3.00,   # Epsilon for foldseek loss constraint
+        dihedral_epsilon=config.training.dihedral_epsilon,
+        gnn_epsilon=config.training.gnn_epsilon,
+        foldseek_epsilon=config.training.foldseek_epsilon,
         alpha=1.0,               # Penalty for slack variables
         max_batch_size=config.training.batch_size  # Maximum expected batch size
     ).to(device)
@@ -781,6 +471,15 @@ def main():
 
     print(f"Dataset split: {train_size} training samples, {val_size} validation samples")
 
+    # Initialize multi-constraint Lagrangian for primal-dual optimization
+    multi_constraint_lagrangian = MultiConstraintLagrangian(
+        num_training_samples=train_size,
+        dihedral_epsilon=args.dihedral_epsilon,
+        gnn_epsilon=args.gnn_epsilon,
+        foldseek_epsilon=args.foldseek_epsilon,
+        alpha=1.0,
+    ).to(device)
+
     train_loader = DataLoader(
         train_dataset,
         batch_size=config.training.batch_size,
@@ -809,18 +508,6 @@ def main():
         weight_decay=0.01,
         betas=(0.9, 0.98)  # Standard AdamW values
     )
-
-    # Setup dual optimizer - for all Lagrange multipliers (separate from primal optimizer)
-    # Only the first few elements (up to batch size) will be actively used, but we want to optimize all of them
-    dual_params = [
-        multi_constraint_lagrangian.lam_dihedral,
-        multi_constraint_lagrangian.lam_gnn,
-        multi_constraint_lagrangian.lam_foldseek
-    ]
-    dual_optimizer = torch.optim.SGD(
-        filter(lambda p: p.requires_grad, dual_params),  # Only optimize trainable params
-        lr=1e-3
-    )  # Smaller learning rate for dual variables
 
     # Setup scheduler
     # Adjust total steps for gradient accumulation
@@ -898,6 +585,31 @@ def main():
     final_dir = os.path.join(config.training.output_dir, "final_model")
     os.makedirs(final_dir, exist_ok=True)
     model.save_lora_adapters(os.path.join(final_dir, "lora_adapters"))
+
+    # Log final lambda distributions
+    if config.logging.use_wandb and multi_constraint_lagrangian is not None:
+        final_lam_dihedral = multi_constraint_lagrangian.lam_dihedral.detach().cpu().numpy()
+        final_lam_gnn = multi_constraint_lagrangian.lam_gnn.detach().cpu().numpy()
+        final_lam_foldseek = multi_constraint_lagrangian.lam_foldseek.detach().cpu().numpy()
+
+        # Create histograms
+        fig, axs = plt.subplots(1, 3, figsize=(18, 5))
+        axs[0].hist(final_lam_dihedral, bins=50, color='blue', alpha=0.7)
+        axs[0].set_title('Final Dihedral Lambdas')
+        axs[0].set_xlabel('Lambda Value')
+        axs[0].set_ylabel('Frequency')
+
+        axs[1].hist(final_lam_gnn, bins=50, color='green', alpha=0.7)
+        axs[1].set_title('Final GNN Lambdas')
+        axs[1].set_xlabel('Lambda Value')
+
+        axs[2].hist(final_lam_foldseek, bins=50, color='red', alpha=0.7)
+        axs[2].set_title('Final Foldseek Lambdas')
+        axs[2].set_xlabel('Lambda Value')
+
+        plt.tight_layout()
+        wandb.log({"final_lambda_histograms": wandb.Image(plt)})
+        plt.close(fig)
 
     print("Training completed!")
     if config.logging.use_wandb:
