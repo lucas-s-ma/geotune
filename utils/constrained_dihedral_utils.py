@@ -247,7 +247,6 @@ class MultiConstraintLagrangian(nn.Module):
                  dihedral_epsilon=0.076,
                  gnn_epsilon=6.38,
                  foldseek_epsilon=3.00,
-                 alpha=1.0,  # Penalty for slack variables
                  dual_lr=1e-3):
         super().__init__()
 
@@ -255,19 +254,15 @@ class MultiConstraintLagrangian(nn.Module):
         self.dihedral_epsilon = dihedral_epsilon
         self.gnn_epsilon = gnn_epsilon
         self.foldseek_epsilon = foldseek_epsilon
-        self.alpha = alpha
         self.num_training_samples = num_training_samples
         self.dual_lr = dual_lr
 
-        # Slack variables for each constraint (global for each constraint type)
-        self.s_dihedral = nn.Parameter(torch.zeros(1), requires_grad=True)
-        self.s_gnn = nn.Parameter(torch.zeros(1), requires_grad=True)
-        self.s_foldseek = nn.Parameter(torch.zeros(1), requires_grad=True)
-
-        # Dual variables (Lagrange multipliers, non-negative) for each sample in the dataset
-        self.lam_dihedral = nn.Parameter(torch.full((num_training_samples,), 0.01), requires_grad=True)
-        self.lam_gnn = nn.Parameter(torch.full((num_training_samples,), 0.01), requires_grad=True)
-        self.lam_foldseek = nn.Parameter(torch.full((num_training_samples,), 0.01), requires_grad=True)
+        # Dual variables (Lagrange multipliers, non-negative) for each sample in the dataset.
+        # We register them as buffers so they are moved to the correct device with the module,
+        # but are not considered model parameters by the optimizer.
+        self.register_buffer('lam_dihedral', torch.full((num_training_samples,), 0.01))
+        self.register_buffer('lam_gnn', torch.full((num_training_samples,), 0.01))
+        self.register_buffer('lam_foldseek', torch.full((num_training_samples,), 0.01))
 
     def compute_lagrangian(self, primary_loss, dihedral_losses, gnn_losses, foldseek_losses, indices):
         """
@@ -285,31 +280,24 @@ class MultiConstraintLagrangian(nn.Module):
         lam_gnn_batch = self.lam_gnn[indices]
         lam_foldseek_batch = self.lam_foldseek[indices]
 
-        # Individual constraint terms for each protein in the batch
-        dihedral_constraint_terms = lam_dihedral_batch * (dihedral_losses - self.dihedral_epsilon)
-        gnn_constraint_terms = lam_gnn_batch * (gnn_losses - self.gnn_epsilon)
-        foldseek_constraint_terms = lam_foldseek_batch * (foldseek_losses - self.foldseek_epsilon)
+        # Individual constraint terms for each protein in the batch.
+        # The lambdas are detached so that their gradients don't flow back to the primary loss.
+        dihedral_constraint_terms = lam_dihedral_batch.detach() * (dihedral_losses - self.dihedral_epsilon)
+        gnn_constraint_terms = lam_gnn_batch.detach() * (gnn_losses - self.gnn_epsilon)
+        foldseek_constraint_terms = lam_foldseek_batch.detach() * (foldseek_losses - self.foldseek_epsilon)
 
         # Sum the constraint terms for this batch
-        total_dihedral_constraint = torch.sum(dihedral_constraint_terms)
-        total_gnn_constraint = torch.sum(gnn_constraint_terms)
-        total_foldseek_constraint = torch.sum(foldseek_constraint_terms)
+        total_constraint_term = torch.sum(dihedral_constraint_terms + gnn_constraint_terms + foldseek_constraint_terms)
 
         # Total Lagrangian
-        lagrangian = primary_loss + total_dihedral_constraint + total_gnn_constraint + total_foldseek_constraint
+        lagrangian = primary_loss + total_constraint_term
 
-        return lagrangian, {
-            'dihedral_constraint_terms': dihedral_constraint_terms,
-            'gnn_constraint_terms': gnn_constraint_terms,
-            'foldseek_constraint_terms': foldseek_constraint_terms,
-            'total_dihedral_constraint': total_dihedral_constraint,
-            'total_gnn_constraint': total_gnn_constraint,
-            'total_foldseek_constraint': total_foldseek_constraint
-        }
+        return lagrangian
 
     def update_dual_variables(self, dihedral_losses, gnn_losses, foldseek_losses, indices):
         """
         Update Lagrange multipliers using projected gradient ascent.
+        This is done with no_grad context and updates the buffers in-place.
 
         Args:
             dihedral_losses: Per-sample dihedral constraint losses for the batch
@@ -317,12 +305,12 @@ class MultiConstraintLagrangian(nn.Module):
             foldseek_losses: Per-sample foldseek alignment losses for the batch
             indices: The indices of the samples in the current batch
         """
-        # Calculate violations for each constraint type for the current batch
-        dihedral_violations = dihedral_losses.detach() - self.dihedral_epsilon
-        gnn_violations = gnn_losses.detach() - self.gnn_epsilon
-        foldseek_violations = foldseek_losses.detach() - self.foldseek_epsilon
-
         with torch.no_grad():
+            # Calculate violations for each constraint type for the current batch
+            dihedral_violations = dihedral_losses.detach() - self.dihedral_epsilon
+            gnn_violations = gnn_losses.detach() - self.gnn_epsilon
+            foldseek_violations = foldseek_losses.detach() - self.foldseek_epsilon
+
             # Update dihedral multipliers for the samples in the batch
             self.lam_dihedral[indices] += self.dual_lr * dihedral_violations
             self.lam_dihedral[indices].clamp_(min=0.0)
@@ -334,13 +322,6 @@ class MultiConstraintLagrangian(nn.Module):
             # Update foldseek multipliers
             self.lam_foldseek[indices] += self.dual_lr * foldseek_violations
             self.lam_foldseek[indices].clamp_(min=0.0)
-
-    def update_slack_variables(self):
-        """Project all slack variables to be non-negative."""
-        with torch.no_grad():
-            self.s_dihedral.clamp_(min=0.0)
-            self.s_gnn.clamp_(min=0.0)
-            self.s_foldseek.clamp_(min=0.0)
 
     def get_average_lambdas(self):
         """Get the average lambda values over the entire dataset."""
