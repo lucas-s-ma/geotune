@@ -263,7 +263,7 @@ def train_epoch(model, dataloader, optimizer, scheduler, dihedral_constraints, d
             'epoch': len(dataloader),  # Track as total batches in epoch
             'train_loss': avg_loss,
             'train_mlm_loss': avg_mlm_loss,
-            'train_constraint_loss': avg_constraint_loss,
+            'train_dihedral_loss': avg_constraint_loss,
             'train_struct_align_loss': avg_struct_align_loss,
             'train_foldseek_loss': avg_physical_loss,  # Physical loss corresponds to Foldseek-like task
             'train_gnn_loss': avg_latent_loss,  # Latent loss corresponds to GNN-like task
@@ -399,7 +399,7 @@ def validate(model, dataloader, dihedral_constraints, device, config, structure_
         wandb.log({
             'val_loss': avg_loss,
             'val_mlm_loss': avg_mlm_loss,
-            'val_constraint_loss': avg_constraint_loss,
+            'val_dihedral_loss': avg_constraint_loss,
             'val_struct_align_loss': avg_struct_align_loss,
             'val_foldseek_loss': avg_physical_loss,
             'val_gnn_loss': avg_latent_loss,
@@ -660,22 +660,22 @@ def main():
                 'epoch': epoch,
                 'train_loss': train_loss,
                 'train_mlm_loss': train_mlm_loss,
-                'train_constraint_loss': train_constraint_loss,
+                'train_dihedral_loss': train_constraint_loss,
                 'train_struct_align_loss': train_struct_align_loss,
                 'train_foldseek_loss': train_physical_loss,  # Physical loss corresponds to Foldseek-like task
                 'train_gnn_loss': train_latent_loss,  # Latent loss corresponds to GNN-like task
                 'val_loss': val_loss,
                 'val_mlm_loss': val_mlm_loss,
-                'val_constraint_loss': val_constraint_loss,
+                'val_dihedral_loss': val_constraint_loss,
                 'val_struct_align_loss': val_struct_align_loss,
                 'val_foldseek_loss': val_physical_loss,
                 'val_gnn_loss': val_latent_loss,
             })
 
         print(f"Epoch {epoch+1} completed:")
-        print(f"  Train Loss: {train_loss:.4f} (MLM: {train_mlm_loss:.4f}, Constraint: {train_constraint_loss:.4f}, StructAlign: {train_struct_align_loss:.4f})")
+        print(f"  Train Loss: {train_loss:.4f} (MLM: {train_mlm_loss:.4f}, Dihedral: {train_constraint_loss:.4f}, StructAlign: {train_struct_align_loss:.4f})")
         print(f"  Train Foldseek: {train_physical_loss:.4f}, GNN: {train_latent_loss:.4f}")
-        print(f"  Val Loss: {val_loss:.4f} (MLM: {val_mlm_loss:.4f}, Constraint: {val_constraint_loss:.4f}, StructAlign: {val_struct_align_loss:.4f})")
+        print(f"  Val Loss: {val_loss:.4f} (MLM: {val_mlm_loss:.4f}, Dihedral: {val_constraint_loss:.4f}, StructAlign: {val_struct_align_loss:.4f})")
         print(f"  Val Foldseek: {val_physical_loss:.4f}, GNN: {val_latent_loss:.4f}")
 
         # Save model checkpoint periodically

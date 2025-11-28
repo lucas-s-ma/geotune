@@ -170,7 +170,8 @@ class ProteinStructureDataset(Dataset):
             'ca_coords': torch.tensor(ca_coords, dtype=torch.float32),
             'c_coords': torch.tensor(c_coords, dtype=torch.float32),
             'seq_len': len(protein['sequence']),
-            'protein_id': protein['id']
+            'protein_id': protein['id'],
+            'index': idx
         }
 
         # Add structural tokens if available
@@ -241,6 +242,11 @@ def collate_fn(batch):
         'seq_lens': [item['seq_len'] for item in batch],
         'protein_ids': [item['protein_id'] for item in batch]
     }
+
+    # Add indices if they exist
+    if 'index' in batch[0]:
+        indices = torch.tensor([item['index'] for item in batch], dtype=torch.long)
+        result['indices'] = indices
 
     # Add pre-computed embeddings if they exist in ALL items of the batch
     if all('precomputed_embeddings' in item for item in batch):
@@ -461,7 +467,8 @@ class EfficientProteinDataset(Dataset):
             'ca_coords': torch.tensor(ca_coords, dtype=torch.float32),
             'c_coords': torch.tensor(c_coords, dtype=torch.float32),
             'seq_len': len(protein['sequence']),
-            'protein_id': protein['id']
+            'protein_id': protein['id'],
+            'index': idx
         }
 
         # Add pre-computed embeddings if available
