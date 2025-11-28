@@ -83,42 +83,19 @@ class ConstrainedDihedralAngleConstraint(nn.Module):
     Implements constrained learning framework for dihedral angles (phi/psi)
     using primal-dual optimization approach.
     """
-    def __init__(self,
-                 constraint_weight=1.0,
-                 alpha=1.0,  # Penalty for slack variables
-                 epsilon=0.5,  # Upper bound for constraint loss
-                 dual_lr=1e-3):  # Learning rate for dual variables
+    def __init__(self, hidden_dim: int, constraint_weight: float = 1.0):
         super().__init__()
         self.constraint_weight = constraint_weight
-        self.alpha = alpha
-        self.epsilon = epsilon
 
         # Linear layers to predict dihedral angles from embeddings
-        self.phi_predictor = nn.Linear(640, 1)  # Assuming hidden size of 640 for ESM
-        self.psi_predictor = nn.Linear(640, 1)
+        self.phi_predictor = nn.Linear(hidden_dim, 1)
+        self.psi_predictor = nn.Linear(hidden_dim, 1)
 
         # Initialize layers with small random weights
         nn.init.xavier_uniform_(self.phi_predictor.weight)
         nn.init.zeros_(self.phi_predictor.bias)
         nn.init.xavier_uniform_(self.psi_predictor.weight)
         nn.init.zeros_(self.psi_predictor.bias)
-
-        # Initialize primal and dual variables
-        # Slack variable s (non-negative) for constraint violation
-        self.s = nn.Parameter(torch.zeros(1), requires_grad=True)
-
-        # Dual variable λ (Lagrange multiplier, non-negative)
-        self.lam = nn.Parameter(torch.zeros(1), requires_grad=True)
-
-        # Dual optimizer will be set up separately
-        self.dual_lr = dual_lr
-        self.dual_optimizer = None
-
-    def initialize_dual_optimizer(self, lr=None):
-        """Initialize the dual optimizer for Lagrange multipliers."""
-        if lr is None:
-            lr = self.dual_lr
-        self.dual_optimizer = torch.optim.SGD([self.lam], lr=lr)
 
     def forward(self, sequence_embeddings, n_coords, ca_coords, c_coords, attention_mask=None):
         """
@@ -131,57 +108,32 @@ class ConstrainedDihedralAngleConstraint(nn.Module):
             c_coords: (batch_size, seq_len, 3) - C atom coordinates
             attention_mask: (batch_size, seq_len) - attention mask to ignore padding
         """
-        batch_size, seq_len, hidden_dim = sequence_embeddings.shape
-
         # Compute true dihedral angles from coordinates
         cos_true_phi, cos_true_psi = compute_dihedral_angles_from_coordinates(n_coords, ca_coords, c_coords)
 
         # Predict dihedral angles from embeddings
         cos_pred_phi, cos_pred_psi = self.predict_dihedral_angles(sequence_embeddings)
 
-        # Calculate constraint losses
-        phi_loss = self.angle_consistency_loss(cos_true_phi, cos_pred_phi, attention_mask, angle_type='phi')
-        psi_loss = self.angle_consistency_loss(cos_true_psi, cos_pred_psi, attention_mask, angle_type='psi')
+        # Calculate constraint losses (masked MSE)
+        min_len_phi = min(cos_true_phi.shape[1], cos_pred_phi.shape[1])
+        phi_mask = attention_mask[:, 1:1+min_len_phi].float()
+        phi_loss_sq = (cos_true_phi[:, :min_len_phi] - cos_pred_phi[:, :min_len_phi])**2
+        phi_loss = (phi_loss_sq * phi_mask).sum() / phi_mask.sum().clamp(min=1.0)
+
+        min_len_psi = min(cos_true_psi.shape[1], cos_pred_psi.shape[1])
+        psi_mask = attention_mask[:, :min_len_psi].float()
+        psi_loss_sq = (cos_true_psi[:, :min_len_psi] - cos_pred_psi[:, :min_len_psi])**2
+        psi_loss = (psi_loss_sq * psi_mask).sum() / psi_mask.sum().clamp(min=1.0)
 
         # Combine constraint losses
         constraint_loss = phi_loss + psi_loss
 
-        # Return constraint loss (this will be used in the primal-dual optimization)
         return {
             'dihedral_loss': constraint_loss * self.constraint_weight,
             'phi_loss': phi_loss * self.constraint_weight,
             'psi_loss': psi_loss * self.constraint_weight,
-            'cos_true_phi': cos_true_phi,
-            'cos_true_psi': cos_true_psi,
-            'cos_pred_phi': cos_pred_phi,
-            'cos_pred_psi': cos_pred_psi,
             'raw_constraint_loss': constraint_loss
         }
-
-    def compute_lagrangian(self, primary_loss, constraint_loss):
-        """
-        Compute the Lagrangian for constrained optimization
-
-        Args:
-            primary_loss: The main task loss (e.g., MLM loss)
-            constraint_loss: The dihedral constraint loss
-        """
-        # Lagrangian = primary_loss + (α/2) * ||s||² + λ * (constraint_loss - ε - s)
-        lagrangian = primary_loss + \
-                    (self.alpha / 2) * (self.s ** 2) + \
-                    self.lam * (constraint_loss - self.epsilon - self.s)
-
-        return lagrangian
-
-    def update_slack_variables(self):
-        """Project slack variables to be non-negative."""
-        with torch.no_grad():
-            self.s.clamp_(min=0.0)
-
-    def update_dual_variables(self):
-        """Project dual variables to be non-negative."""
-        with torch.no_grad():
-            self.lam.clamp_(min=0.0)
 
     def predict_dihedral_angles(self, embeddings):
         """

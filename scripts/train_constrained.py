@@ -262,7 +262,7 @@ def main():
     model.to(device)
     esm_hidden_size = model.config.hidden_size
 
-    dihedral_module = ConstrainedDihedralAngleConstraint().to(device)
+    dihedral_module = ConstrainedDihedralAngleConstraint(hidden_dim=esm_hidden_size).to(device)
     alignment_module = StructureAlignmentLoss(hidden_dim=esm_hidden_size, num_structural_classes=21).to(device)
     gnn_module = PretrainedGNNWrapper(hidden_dim=esm_hidden_size, use_gearnet_stub=True).to(device).eval()
 
