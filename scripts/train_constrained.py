@@ -350,6 +350,8 @@ def main():
             config=OmegaConf.to_container(config),
             name=f"esm2_lora_constraints_{config.model.model_name.split('/')[-1]}"
         )
+        wandb.config.update(vars(args))
+
 
     # Load model and tokenizer
     print("Loading model...")
@@ -388,90 +390,50 @@ def main():
         constraint_weight=config.model.constraint_weight
     ).to(device)
 
-    # Initialize multi-constraint Lagrangian for primal-dual optimization
-    multi_constraint_lagrangian = MultiConstraintLagrangian(
-        num_training_samples=train_size,
-        dihedral_epsilon=args.dihedral_epsilon,
-        gnn_epsilon=args.gnn_epsilon,
-        foldseek_epsilon=args.foldseek_epsilon,
-        alpha=1.0,
-    ).to(device)
-
     # Initialize structure alignment loss module
-    # Use ESM model's hidden dimension for the projection dimensions
     esm_hidden_size = model.config.hidden_size
     structure_alignment_loss = StructureAlignmentLoss(
         hidden_dim=esm_hidden_size,
-        num_structural_classes=21,  # 21 structural classes for Foldseek (20 + 'X')
+        num_structural_classes=21,
         shared_projection_dim=512,
         latent_weight=0.5,
         physical_weight=0.5
     ).to(device)
 
-    # Initialize frozen pre-trained GNN (e.g. GearNet) - use stub to avoid TorchDrug dependency
-    # Set use_gearnet_stub=True to avoid TorchDrug/RDKit compatibility issues
+    # Initialize frozen pre-trained GNN
     frozen_gnn = PretrainedGNNWrapper(hidden_dim=esm_hidden_size, use_gearnet_stub=True).to(device)
-    frozen_gnn.eval()  # Set to evaluation mode to ensure no gradients
+    frozen_gnn.eval()
 
     # Load dataset
     print("Loading dataset...")
-
-    # Use the efficient pre-processed dataset
-    processed_dataset_path = os.path.join(config.data.data_path, "processed_dataset.pkl")
-    if not os.path.exists(processed_dataset_path):
+    processed_dataset_path = os.path.join(args.data_path)
+    if not os.path.exists(os.path.join(processed_dataset_path, "processed_dataset.pkl")):
         raise FileNotFoundError(
             f"Processed dataset not found at {processed_dataset_path}. "
-            f"Please run 'python data_pipeline/process_dataset.py --raw_dir [path_to_pdb_files] --output_dir [path_to_save_processed_data] --create_efficient_dataset' "
-            f"to create the processed dataset first."
+            f"Please run data processing script first."
         )
 
-    print("Using efficient pre-processed dataset...")
-    # Check if structural tokens are available
-    struct_token_path = os.path.join(config.data.data_path, "structural_tokens.pkl")
+    struct_token_path = os.path.join(processed_dataset_path, "structural_tokens.pkl")
     include_structural_tokens = os.path.exists(struct_token_path)
-    print(f"Structural tokens available: {include_structural_tokens}")
-
-    # Check if embeddings directory exists
-    embeddings_path = os.path.join(config.data.data_path, "embeddings")
-    embeddings_exist = os.path.exists(embeddings_path)
-
-    # IMPORTANT: Disable loading pre-computed embeddings if they have wrong dimension
-    # Pre-computed embeddings must match ESM model's hidden_dim
-    # ESM2-150M uses 640, ESM2-35M uses 480, etc.
-    # If embeddings were pre-computed with different hidden_dim, regenerate them or disable
-    load_embeddings = False  # Generate on-the-fly with correct dimension
-    if embeddings_exist:
-        print(f"Pre-computed embeddings found but disabled (may have wrong dimension)")
-        print(f"Embeddings will be generated on-the-fly with hidden_dim={esm_hidden_size}")
-    else:
-        print(f"Pre-computed embeddings not available, will generate on-the-fly")
-
+    
     full_dataset = EfficientProteinDataset(
-        config.data.data_path,
+        processed_data_path,
         max_seq_len=config.training.max_seq_len,
         include_structural_tokens=include_structural_tokens,
-        load_embeddings=load_embeddings
+        load_embeddings=False # Embeddings are generated on the fly
     )
 
-    # Create train-validation split (80% train, 20% validation)
-    total_size = len(full_dataset)
-    train_size = int(0.8 * total_size)
-    val_size = total_size - train_size
-
-    # Set seed for reproducible splits
-    torch.manual_seed(config.training.seed)
-    if torch.cuda.is_available():
-        torch.cuda.manual_seed_all(config.training.seed)
-
+    # Create train-validation split
+    train_size = int(0.8 * len(full_dataset))
+    val_size = len(full_dataset) - train_size
     train_dataset, val_dataset = torch.utils.data.random_split(
         full_dataset,
         [train_size, val_size],
         generator=torch.Generator().manual_seed(config.training.seed)
     )
-
     print(f"Dataset split: {train_size} training samples, {val_size} validation samples")
 
-    # Initialize multi-constraint Lagrangian for primal-dual optimization
+    # NOW initialize the multi-constraint lagrangian with train_size
     multi_constraint_lagrangian = MultiConstraintLagrangian(
         num_training_samples=train_size,
         dihedral_epsilon=args.dihedral_epsilon,
@@ -496,21 +458,20 @@ def main():
         num_workers=1
     )
 
-    # Setup primal optimizer - for model parameters and all slack variables
+    # Setup primal optimizer
     primal_params = list(model.parameters()) + [
         multi_constraint_lagrangian.s_dihedral,
         multi_constraint_lagrangian.s_gnn,
-        multi_constraint_lagrangian.s_foldseek
+        multi_constraint_lagrangian.s_foldseek,
     ]
     primal_optimizer = torch.optim.AdamW(
-        filter(lambda p: p.requires_grad, primal_params),  # Only optimize trainable params
+        filter(lambda p: p.requires_grad, primal_params),
         lr=config.training.learning_rate,
         weight_decay=0.01,
-        betas=(0.9, 0.98)  # Standard AdamW values
+        betas=(0.9, 0.98)
     )
 
     # Setup scheduler
-    # Adjust total steps for gradient accumulation
     gradient_accumulation_steps = getattr(config.training, 'gradient_accumulation_steps', 1)
     total_steps = (len(train_loader) // gradient_accumulation_steps) * config.training.num_epochs
     scheduler = get_linear_schedule_with_warmup(
@@ -519,7 +480,7 @@ def main():
         num_training_steps=total_steps
     )
 
-    # Setup mixed precision scaler if enabled
+    # Setup mixed precision scaler
     scaler = None
     if hasattr(config.training, 'mixed_precision') and config.training.mixed_precision:
         if torch.cuda.is_available():
@@ -530,26 +491,20 @@ def main():
 
     # Training loop
     print(f"Starting training for {config.training.num_epochs} epochs...")
-    print(f"Effective batch size: {config.training.batch_size * gradient_accumulation_steps}")
-
     for epoch in range(config.training.num_epochs):
         print(f"\nEpoch {epoch+1}/{config.training.num_epochs}")
 
-        # Train with multi-constraint approach
         train_loss, train_mlm_loss, train_dihedral_loss, train_struct_align_loss, train_gnn_loss, train_foldseek_loss = train_epoch(
             model, train_loader, primal_optimizer, scheduler, dihedral_constraints, device, config,
             structure_alignment_loss=structure_alignment_loss, frozen_gnn=frozen_gnn,
             multi_constraint_lagrangian=multi_constraint_lagrangian, scaler=scaler
         )
 
-        # Validate with multi-constraint approach
         val_loss, val_mlm_loss, val_dihedral_loss, val_struct_align_loss, val_gnn_loss, val_foldseek_loss = validate(
             model, val_loader, dihedral_constraints, device, config,
-            structure_alignment_loss=structure_alignment_loss, frozen_gnn=frozen_gnn,
-            multi_constraint_lagrangian=multi_constraint_lagrangian
+            structure_alignment_loss=structure_alignment_loss, frozen_gnn=frozen_gnn
         )
 
-        # Log metrics
         if config.logging.use_wandb:
             wandb.log({
                 'epoch': epoch,
@@ -558,27 +513,21 @@ def main():
                 'train_dihedral_loss': train_dihedral_loss,
                 'train_gnn_loss': train_gnn_loss,
                 'train_foldseek_loss': train_foldseek_loss,
-                'train_struct_align_loss': train_struct_align_loss,
                 'val_loss': val_loss,
                 'val_mlm_loss': val_mlm_loss,
                 'val_dihedral_loss': val_dihedral_loss,
                 'val_gnn_loss': val_gnn_loss,
                 'val_foldseek_loss': val_foldseek_loss,
-                'val_struct_align_loss': val_struct_align_loss,
             })
 
         print(f"Epoch {epoch+1} completed:")
-        print(f"  Train Loss: {train_loss:.4f} (MLM: {train_mlm_loss:.4f}, Dihedral: {train_dihedral_loss:.4f}, GNN: {train_gnn_loss:.4f}, FoldSeek: {train_foldseek_loss:.4f}, StructAlign: {train_struct_align_loss:.4f})")
-        print(f"  Val Loss: {val_loss:.4f} (MLM: {val_mlm_loss:.4f}, Dihedral: {val_dihedral_loss:.4f}, GNN: {val_gnn_loss:.4f}, FoldSeek: {val_foldseek_loss:.4f}, StructAlign: {val_struct_align_loss:.4f})")
+        print(f"  Train Loss: {train_loss:.4f} (MLM: {train_mlm_loss:.4f}, Dihedral: {train_dihedral_loss:.4f}, GNN: {train_gnn_loss:.4f}, FoldSeek: {train_foldseek_loss:.4f})")
+        print(f"  Val Loss: {val_loss:.4f} (MLM: {val_mlm_loss:.4f}, Dihedral: {val_dihedral_loss:.4f}, GNN: {val_gnn_loss:.4f}, FoldSeek: {val_foldseek_loss:.4f})")
 
-        # Save model checkpoint periodically
-        if (epoch + 1) % 2 == 0:  # Save every 2 epochs
+        if (epoch + 1) % 2 == 0:
             checkpoint_dir = os.path.join(config.training.output_dir, f"checkpoint_epoch_{epoch+1}")
             os.makedirs(checkpoint_dir, exist_ok=True)
-
-            # Save LoRA adapters
             model.save_lora_adapters(os.path.join(checkpoint_dir, "lora_adapters"))
-
             print(f"Checkpoint saved to {checkpoint_dir}")
 
     # Final save
@@ -592,7 +541,6 @@ def main():
         final_lam_gnn = multi_constraint_lagrangian.lam_gnn.detach().cpu().numpy()
         final_lam_foldseek = multi_constraint_lagrangian.lam_foldseek.detach().cpu().numpy()
 
-        # Create histograms
         fig, axs = plt.subplots(1, 3, figsize=(18, 5))
         axs[0].hist(final_lam_dihedral, bins=50, color='blue', alpha=0.7)
         axs[0].set_title('Final Dihedral Lambdas')
@@ -614,6 +562,7 @@ def main():
     print("Training completed!")
     if config.logging.use_wandb:
         wandb.finish()
+
 
 
 if __name__ == "__main__":
