@@ -81,7 +81,7 @@ def train_epoch(model, dataloader, optimizer, scheduler, dihedral_constraints, d
         with torch.amp.autocast('cuda', enabled=use_amp):
             outputs = model(input_ids=input_ids, attention_mask=attention_mask)
             mask_ratio = 0.15
-            mask_positions = (torch.rand(batch_size, outputs.sequence_output.size(1), device=device) < mask_ratio) & (attention_mask.bool())
+            mask_positions = (torch.rand(batch_size, outputs['sequence_output'].size(1), device=device) < mask_ratio) & (attention_mask.bool())
             labels = input_ids.clone()
             labels[~mask_positions] = -100
             masked_input_ids = input_ids.clone()
