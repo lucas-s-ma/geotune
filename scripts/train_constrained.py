@@ -390,11 +390,11 @@ def main():
 
     # Initialize multi-constraint Lagrangian for primal-dual optimization
     multi_constraint_lagrangian = MultiConstraintLagrangian(
-        dihedral_epsilon=config.training.dihedral_epsilon,
-        gnn_epsilon=config.training.gnn_epsilon,
-        foldseek_epsilon=config.training.foldseek_epsilon,
-        alpha=1.0,               # Penalty for slack variables
-        max_batch_size=config.training.batch_size  # Maximum expected batch size
+        num_training_samples=train_size,
+        dihedral_epsilon=args.dihedral_epsilon,
+        gnn_epsilon=args.gnn_epsilon,
+        foldseek_epsilon=args.foldseek_epsilon,
+        alpha=1.0,
     ).to(device)
 
     # Initialize structure alignment loss module
