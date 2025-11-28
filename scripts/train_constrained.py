@@ -417,7 +417,7 @@ def main():
     include_structural_tokens = os.path.exists(struct_token_path)
     
     full_dataset = EfficientProteinDataset(
-        processed_data_path,
+        processed_dataset_path,
         max_seq_len=config.training.max_seq_len,
         include_structural_tokens=include_structural_tokens,
         load_embeddings=False # Embeddings are generated on the fly
