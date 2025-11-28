@@ -66,10 +66,10 @@ def compute_dihedral_angles_from_coordinates(n_coords, ca_coords, c_coords):
     n2_psi = torch.cross(v2_psi, v3_psi, dim=-1)  # Normal to second plane
 
     # Ensure normals are not zero vectors by adding small epsilon
-    n1_phi = F.normalize(n1_phi, p=2, dim=-1)
-    n2_phi = F.normalize(n2_phi, p=2, dim=-1)
-    n1_psi = F.normalize(n1_psi, p=2, dim=-1)
-    n2_psi = F.normalize(n2_psi, p=2, dim=-1)
+    n1_phi = F.normalize(n1_phi, p=2, dim=-1, eps=1e-8)
+    n2_phi = F.normalize(n2_phi, p=2, dim=-1, eps=1e-8)
+    n1_psi = F.normalize(n1_psi, p=2, dim=-1, eps=1e-8)
+    n2_psi = F.normalize(n2_psi, p=2, dim=-1, eps=1e-8)
 
     # Calculate cosines of dihedral angles using dot products
     cos_phi = torch.clamp(torch.sum(n1_phi * n2_phi, dim=-1), -1, 1)
