@@ -1,0 +1,11 @@
+Using device: cuda
+Using stub implementation for pre-trained GNN (avoiding TorchDrug)
+Loaded structural tokens for 11157 proteins
+Loaded 11158 proteins from pre-processed dataset
+Dataset split: 8926 training, 2232 validation samples.
+Starting constrained training for 10 epochs...
+
+--- Epoch 1/10 ---
+[1;34mwandb[0m: 
+[1;34mwandb[0m: 🚀 View run [33mtough-bush-53[0m at: [34m[0m
+[1;34mwandb[0m: Find logs at: [1;35mwandb/run-20251128_184416-9vhyp752/logs[0m

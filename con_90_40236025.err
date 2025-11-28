@@ -1,0 +1,53 @@
+wandb: Currently logged in as: lucas-shujun-ma (lucas-shujun-ma-duke) to https://api.wandb.ai. Use `wandb login --relogin` to force relogin
+wandb: Tracking run with wandb version 0.22.3
+wandb: Run data is saved locally in /work/sm996/co-amp/wandb/run-20251128_184416-9vhyp752
+wandb: Run `wandb offline` to turn off syncing.
+wandb: Syncing run tough-bush-53
+wandb: ⭐️ View project at https://wandb.ai/lucas-shujun-ma-duke/geotune_online
+wandb: 🚀 View run at https://wandb.ai/lucas-shujun-ma-duke/geotune_online/runs/9vhyp752
+`torch_dtype` is deprecated! Use `dtype` instead!
+Some weights of EsmModel were not initialized from the model checkpoint at facebook/esm2_t30_150M_UR50D and are newly initialized: ['pooler.dense.bias', 'pooler.dense.weight']
+You should probably TRAIN this model on a down-stream task to be able to use it for predictions and inference.
+/work/sm996/co-amp/scripts/train_constrained.py:292: FutureWarning: `torch.cuda.amp.GradScaler(args...)` is deprecated. Please use `torch.amp.GradScaler('cuda', args...)` instead.
+  scaler = torch.cuda.amp.GradScaler(enabled=torch.cuda.is_available())
+Training Epoch:   0%|          | 0/1116 [00:00<?, ?it/s]/pytorch/aten/src/ATen/native/cuda/IndexKernel.cu:113: operator(): block: [0,0,0], thread: [4,0,0] Assertion `-sizes[i] <= index && index < sizes[i] && "index out of bounds"` failed.
+/pytorch/aten/src/ATen/native/cuda/IndexKernel.cu:113: operator(): block: [0,0,0], thread: [6,0,0] Assertion `-sizes[i] <= index && index < sizes[i] && "index out of bounds"` failed.
+Training Epoch:   0%|          | 0/1116 [00:00<?, ?it/s]
+Traceback (most recent call last):
+  File "/work/sm996/co-amp/scripts/train_constrained.py", line 355, in <module>
+    main()
+  File "/work/sm996/co-amp/scripts/train_constrained.py", line 299, in main
+    train_lagrangian, train_mlm, train_dihedral, train_gnn, train_foldseek = train_epoch(
+  File "/work/sm996/co-amp/scripts/train_constrained.py", line 136, in train_epoch
+    scaler.scale(scaled_lagrangian).backward()
+  File "/hpc/group/naderilab/sm996/miniconda3/envs/geo_project/lib/python3.10/site-packages/torch/_tensor.py", line 625, in backward
+    torch.autograd.backward(
+  File "/hpc/group/naderilab/sm996/miniconda3/envs/geo_project/lib/python3.10/site-packages/torch/autograd/__init__.py", line 354, in backward
+    _engine_run_backward(
+  File "/hpc/group/naderilab/sm996/miniconda3/envs/geo_project/lib/python3.10/site-packages/torch/autograd/graph.py", line 841, in _engine_run_backward
+    return Variable._execution_engine.run_backward(  # Calls into the C++ engine to run the backward pass
+torch.AcceleratorError: CUDA error: device-side assert triggered
+Search for `cudaErrorAssert' in https://docs.nvidia.com/cuda/cuda-runtime-api/group__CUDART__TYPES.html for more information.
+CUDA kernel errors might be asynchronously reported at some other API call, so the stacktrace below might be incorrect.
+For debugging consider passing CUDA_LAUNCH_BLOCKING=1
+Compile with `TORCH_USE_CUDA_DSA` to enable device-side assertions.
+
+Traceback (most recent call last):
+  File "/work/sm996/co-amp/scripts/train_constrained.py", line 355, in <module>
+    main()
+  File "/work/sm996/co-amp/scripts/train_constrained.py", line 299, in main
+    train_lagrangian, train_mlm, train_dihedral, train_gnn, train_foldseek = train_epoch(
+  File "/work/sm996/co-amp/scripts/train_constrained.py", line 136, in train_epoch
+    scaler.scale(scaled_lagrangian).backward()
+  File "/hpc/group/naderilab/sm996/miniconda3/envs/geo_project/lib/python3.10/site-packages/torch/_tensor.py", line 625, in backward
+    torch.autograd.backward(
+  File "/hpc/group/naderilab/sm996/miniconda3/envs/geo_project/lib/python3.10/site-packages/torch/autograd/__init__.py", line 354, in backward
+    _engine_run_backward(
+  File "/hpc/group/naderilab/sm996/miniconda3/envs/geo_project/lib/python3.10/site-packages/torch/autograd/graph.py", line 841, in _engine_run_backward
+    return Variable._execution_engine.run_backward(  # Calls into the C++ engine to run the backward pass
+torch.AcceleratorError: CUDA error: device-side assert triggered
+Search for `cudaErrorAssert' in https://docs.nvidia.com/cuda/cuda-runtime-api/group__CUDART__TYPES.html for more information.
+CUDA kernel errors might be asynchronously reported at some other API call, so the stacktrace below might be incorrect.
+For debugging consider passing CUDA_LAUNCH_BLOCKING=1
+Compile with `TORCH_USE_CUDA_DSA` to enable device-side assertions.
+
