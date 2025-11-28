@@ -244,7 +244,13 @@ def main():
         wandb.init(project=config.logging.project_name, config={**OmegaConf.to_container(config), **vars(args)})
 
     # Model and Modules
-    model, _ = load_esm_with_lora(args.model_name, config.lora)
+    lora_params = {
+        "r": config.lora.r,
+        "lora_alpha": config.lora.alpha,
+        "lora_dropout": config.lora.dropout,
+        "target_modules": config.lora.target_modules
+    }
+    model, _ = load_esm_with_lora(args.model_name, lora_params)
     model.to(device)
     esm_hidden_size = model.config.hidden_size
 
