@@ -277,8 +277,10 @@ def main():
     print(f"Dataset split: {train_size} training, {val_size} validation samples.")
 
     # Constrained Learning Setup
+    # We initialize the lambdas for the *full dataset* size to ensure that the indices
+    # from the random training split are always valid.
     lagrangian_module = MultiConstraintLagrangian(
-        num_training_samples=train_size,
+        num_training_samples=len(full_dataset),
         dihedral_epsilon=args.dihedral_epsilon,
         gnn_epsilon=args.gnn_epsilon,
         foldseek_epsilon=args.foldseek_epsilon,

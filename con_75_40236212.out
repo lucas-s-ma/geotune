@@ -1,0 +1,60 @@
+Using device: cuda
+Using stub implementation for pre-trained GNN (avoiding TorchDrug)
+Loaded structural tokens for 11157 proteins
+Loaded 11158 proteins from pre-processed dataset
+Dataset split: 8926 training, 2232 validation samples.
+Starting constrained training for 10 epochs...
+
+--- Epoch 1/10 ---
+Epoch 1 Summary:
+  Train | Lagrangian: 2.4230, MLM: 2.1192, Dihedral: 0.9762, GNN: 6.2364, Foldseek: 3.0542
+  Val   | MLM: 1.2580, Dihedral: 0.7670, GNN: 5.9576, Foldseek: 3.0565
+
+--- Epoch 2/10 ---
+Epoch 2 Summary:
+  Train | Lagrangian: 1.4471, MLM: 1.1848, Dihedral: 0.6673, GNN: 5.8721, Foldseek: 3.0519
+  Val   | MLM: 1.1360, Dihedral: 0.6167, GNN: 5.8690, Foldseek: 3.0529
+
+--- Epoch 3/10 ---
+Epoch 3 Summary:
+  Train | Lagrangian: 1.3778, MLM: 1.1170, Dihedral: 0.5796, GNN: 5.8272, Foldseek: 3.0486
+  Val   | MLM: 1.0870, Dihedral: 0.5669, GNN: 5.8402, Foldseek: 3.0500
+
+--- Epoch 4/10 ---
+Epoch 4 Summary:
+  Train | Lagrangian: 1.3419, MLM: 1.0765, Dihedral: 0.5488, GNN: 5.8028, Foldseek: 3.0462
+  Val   | MLM: 1.0670, Dihedral: 0.5455, GNN: 5.8200, Foldseek: 3.0479
+
+--- Epoch 5/10 ---
+Epoch 5 Summary:
+  Train | Lagrangian: 1.3219, MLM: 1.0502, Dihedral: 0.5319, GNN: 5.7884, Foldseek: 3.0443
+  Val   | MLM: 1.0438, Dihedral: 0.5329, GNN: 5.8084, Foldseek: 3.0467
+
+--- Epoch 6/10 ---
+Epoch 6 Summary:
+  Train | Lagrangian: 1.3117, MLM: 1.0333, Dihedral: 0.5192, GNN: 5.7741, Foldseek: 3.0430
+  Val   | MLM: 1.0218, Dihedral: 0.5251, GNN: 5.7949, Foldseek: 3.0453
+
+--- Epoch 7/10 ---
+Epoch 7 Summary:
+  Train | Lagrangian: 1.2998, MLM: 1.0138, Dihedral: 0.5128, GNN: 5.7665, Foldseek: 3.0418
+  Val   | MLM: 1.0168, Dihedral: 0.5194, GNN: 5.7854, Foldseek: 3.0444
+
+--- Epoch 8/10 ---
+Epoch 8 Summary:
+  Train | Lagrangian: 1.3060, MLM: 1.0124, Dihedral: 0.5071, GNN: 5.7592, Foldseek: 3.0410
+  Val   | MLM: 1.0082, Dihedral: 0.5141, GNN: 5.7773, Foldseek: 3.0437
+
+--- Epoch 9/10 ---
+Epoch 9 Summary:
+  Train | Lagrangian: 1.3038, MLM: 1.0023, Dihedral: 0.5039, GNN: 5.7530, Foldseek: 3.0405
+  Val   | MLM: 1.0010, Dihedral: 0.5111, GNN: 5.7752, Foldseek: 3.0433
+
+--- Epoch 10/10 ---
+Epoch 10 Summary:
+  Train | Lagrangian: 1.3096, MLM: 0.9994, Dihedral: 0.5021, GNN: 5.7518, Foldseek: 3.0402
+  Val   | MLM: 0.9981, Dihedral: 0.5100, GNN: 5.7728, Foldseek: 3.0431
+Final LoRA adapters saved to outputs/final_model
+Logged final lambda histograms to wandb.
+
+Training completed!
