@@ -1,0 +1,81 @@
+code-server 4.96.4
+wandb: Currently logged in as: lucas-shujun-ma (lucas-shujun-ma-duke) to https://api.wandb.ai. Use `wandb login --relogin` to force relogin
+wandb: Tracking run with wandb version 0.22.3
+wandb: Run data is saved locally in /work/sm996/co-amp/wandb/run-20251202_160217-fyhplu1r
+wandb: Run `wandb offline` to turn off syncing.
+wandb: Syncing run esm2_lora_constraints_esm2_t30_150M_UR50D
+wandb: ⭐️ View project at https://wandb.ai/lucas-shujun-ma-duke/geotune_online
+wandb: 🚀 View run at https://wandb.ai/lucas-shujun-ma-duke/geotune_online/runs/fyhplu1r
+`torch_dtype` is deprecated! Use `dtype` instead!
+Some weights of EsmModel were not initialized from the model checkpoint at facebook/esm2_t30_150M_UR50D and are newly initialized: ['pooler.dense.bias', 'pooler.dense.weight']
+You should probably TRAIN this model on a down-stream task to be able to use it for predictions and inference.
+Training:   0%|          | 0/1706 [00:00<?, ?it/s]Caching is incompatible with gradient checkpointing in EsmLayer. Setting `use_cache=False`.
+Training:   0%|          | 0/1706 [00:01<?, ?it/s]
+Traceback (most recent call last):
+  File "/work/sm996/co-amp/scripts/train.py", line 702, in <module>
+    main()
+  File "/work/sm996/co-amp/scripts/train.py", line 646, in main
+    train_loss, train_mlm_loss, train_constraint_loss, train_struct_align_loss, train_latent_loss, train_physical_loss = train_epoch(
+  File "/work/sm996/co-amp/scripts/train.py", line 156, in train_epoch
+    pGNN_embeddings = frozen_gnn(n_coords, ca_coords, c_coords)
+  File "/hpc/group/naderilab/sm996/miniconda3/envs/geo_project/lib/python3.10/site-packages/torch/nn/modules/module.py", line 1775, in _wrapped_call_impl
+    return self._call_impl(*args, **kwargs)
+  File "/hpc/group/naderilab/sm996/miniconda3/envs/geo_project/lib/python3.10/site-packages/torch/nn/modules/module.py", line 1786, in _call_impl
+    return forward_call(*args, **kwargs)
+  File "/work/sm996/co-amp/utils/structure_alignment_utils.py", line 335, in forward
+    return self.backbone(n_coords, ca_coords, c_coords)
+  File "/hpc/group/naderilab/sm996/miniconda3/envs/geo_project/lib/python3.10/site-packages/torch/nn/modules/module.py", line 1775, in _wrapped_call_impl
+    return self._call_impl(*args, **kwargs)
+  File "/hpc/group/naderilab/sm996/miniconda3/envs/geo_project/lib/python3.10/site-packages/torch/nn/modules/module.py", line 1786, in _call_impl
+    return forward_call(*args, **kwargs)
+  File "/work/sm996/co-amp/models/gearnet_model.py", line 272, in forward
+    output = self.gearnet_model(batched_graph, node_features)
+  File "/hpc/group/naderilab/sm996/miniconda3/envs/geo_project/lib/python3.10/site-packages/torch/nn/modules/module.py", line 1775, in _wrapped_call_impl
+    return self._call_impl(*args, **kwargs)
+  File "/hpc/group/naderilab/sm996/miniconda3/envs/geo_project/lib/python3.10/site-packages/torch/nn/modules/module.py", line 1786, in _call_impl
+    return forward_call(*args, **kwargs)
+  File "/hpc/group/naderilab/sm996/miniconda3/envs/geo_project/lib/python3.10/site-packages/torchdrug/models/gearnet.py", line 95, in forward
+    hidden = self.layers[i](graph, layer_input)
+  File "/hpc/group/naderilab/sm996/miniconda3/envs/geo_project/lib/python3.10/site-packages/torch/nn/modules/module.py", line 1775, in _wrapped_call_impl
+    return self._call_impl(*args, **kwargs)
+  File "/hpc/group/naderilab/sm996/miniconda3/envs/geo_project/lib/python3.10/site-packages/torch/nn/modules/module.py", line 1786, in _call_impl
+    return forward_call(*args, **kwargs)
+  File "/hpc/group/naderilab/sm996/miniconda3/envs/geo_project/lib/python3.10/site-packages/torchdrug/layers/conv.py", line 91, in forward
+    update = self.message_and_aggregate(graph, input)
+  File "/hpc/group/naderilab/sm996/miniconda3/envs/geo_project/lib/python3.10/site-packages/torchdrug/layers/conv.py", line 804, in message_and_aggregate
+    update = torch.sparse.mm(adjacency.t(), input)
+NotImplementedError: "addmm_sparse_cuda" not implemented for 'Half'
+Traceback (most recent call last):
+  File "/work/sm996/co-amp/scripts/train.py", line 702, in <module>
+    main()
+  File "/work/sm996/co-amp/scripts/train.py", line 646, in main
+    train_loss, train_mlm_loss, train_constraint_loss, train_struct_align_loss, train_latent_loss, train_physical_loss = train_epoch(
+  File "/work/sm996/co-amp/scripts/train.py", line 156, in train_epoch
+    pGNN_embeddings = frozen_gnn(n_coords, ca_coords, c_coords)
+  File "/hpc/group/naderilab/sm996/miniconda3/envs/geo_project/lib/python3.10/site-packages/torch/nn/modules/module.py", line 1775, in _wrapped_call_impl
+    return self._call_impl(*args, **kwargs)
+  File "/hpc/group/naderilab/sm996/miniconda3/envs/geo_project/lib/python3.10/site-packages/torch/nn/modules/module.py", line 1786, in _call_impl
+    return forward_call(*args, **kwargs)
+  File "/work/sm996/co-amp/utils/structure_alignment_utils.py", line 335, in forward
+    return self.backbone(n_coords, ca_coords, c_coords)
+  File "/hpc/group/naderilab/sm996/miniconda3/envs/geo_project/lib/python3.10/site-packages/torch/nn/modules/module.py", line 1775, in _wrapped_call_impl
+    return self._call_impl(*args, **kwargs)
+  File "/hpc/group/naderilab/sm996/miniconda3/envs/geo_project/lib/python3.10/site-packages/torch/nn/modules/module.py", line 1786, in _call_impl
+    return forward_call(*args, **kwargs)
+  File "/work/sm996/co-amp/models/gearnet_model.py", line 272, in forward
+    output = self.gearnet_model(batched_graph, node_features)
+  File "/hpc/group/naderilab/sm996/miniconda3/envs/geo_project/lib/python3.10/site-packages/torch/nn/modules/module.py", line 1775, in _wrapped_call_impl
+    return self._call_impl(*args, **kwargs)
+  File "/hpc/group/naderilab/sm996/miniconda3/envs/geo_project/lib/python3.10/site-packages/torch/nn/modules/module.py", line 1786, in _call_impl
+    return forward_call(*args, **kwargs)
+  File "/hpc/group/naderilab/sm996/miniconda3/envs/geo_project/lib/python3.10/site-packages/torchdrug/models/gearnet.py", line 95, in forward
+    hidden = self.layers[i](graph, layer_input)
+  File "/hpc/group/naderilab/sm996/miniconda3/envs/geo_project/lib/python3.10/site-packages/torch/nn/modules/module.py", line 1775, in _wrapped_call_impl
+    return self._call_impl(*args, **kwargs)
+  File "/hpc/group/naderilab/sm996/miniconda3/envs/geo_project/lib/python3.10/site-packages/torch/nn/modules/module.py", line 1786, in _call_impl
+    return forward_call(*args, **kwargs)
+  File "/hpc/group/naderilab/sm996/miniconda3/envs/geo_project/lib/python3.10/site-packages/torchdrug/layers/conv.py", line 91, in forward
+    update = self.message_and_aggregate(graph, input)
+  File "/hpc/group/naderilab/sm996/miniconda3/envs/geo_project/lib/python3.10/site-packages/torchdrug/layers/conv.py", line 804, in message_and_aggregate
+    update = torch.sparse.mm(adjacency.t(), input)
+NotImplementedError: "addmm_sparse_cuda" not implemented for 'Half'
