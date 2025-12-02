@@ -1,0 +1,49 @@
+# Main configuration for GeoTune New
+
+# Model configuration
+model:
+  model_name: "facebook/esm2_t30_150M_UR50D"  # Base ESM2 model
+  constraint_weight: 0.1  # Weight for geometric constraint loss
+  dist_threshold: 15.0    # Distance threshold for constraints (Angstroms)
+
+# LoRA configuration
+lora:
+  r: 8                    # LoRA attention dimension
+  alpha: 16               # LoRA scaling factor
+  dropout: 0.1            # LoRA dropout rate
+  target_modules:         # Modules to apply LoRA to
+    - "query"
+    - "key"
+    - "value"
+    - "dense"
+    - "intermediate.dense"
+    - "output.dense"
+
+# Training configuration
+training:
+  batch_size: 8           # Batch size - reduced for 16GB GPU
+  gradient_accumulation_steps: 4  # Accumulate gradients (effective batch_size = 2*4 = 8)
+  learning_rate: 1e-3     # Learning rate
+  num_epochs: 10          # Number of epochs
+  warmup_steps: 100       # Warmup steps for scheduler
+  max_seq_len: 512        # Maximum sequence length - reduced for memory
+  seed: 42                # Random seed
+  output_dir: "outputs"   # Output directory
+  use_gradient_checkpointing: true  # Enable gradient checkpointing to save memory
+  mixed_precision: true   # Use fp16 mixed precision training
+
+# Data configuration
+data:
+  data_path: "data/processed"   # Path to processed data files
+  num_workers: 2          # Number of data loading workers
+
+# Logging configuration
+logging:
+  use_wandb: true         # Whether to use Weights & Biases
+  project_name: "geotune_online"  # W&B project name
+  
+# Constraint configuration
+constraints:
+  distance_weight: 1.0    # Weight for distance constraints
+  angle_weight: 0.5       # Weight for angle constraints
+  neighborhood_weight: 0.5  # Weight for neighborhood constraints
