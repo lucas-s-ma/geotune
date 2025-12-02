@@ -1,0 +1,35 @@
+code-server 4.96.4
+wandb: Currently logged in as: lucas-shujun-ma (lucas-shujun-ma-duke) to https://api.wandb.ai. Use `wandb login --relogin` to force relogin
+wandb: Tracking run with wandb version 0.22.3
+wandb: Run data is saved locally in /work/sm996/co-amp/wandb/run-20251202_030618-eygfv9vq
+wandb: Run `wandb offline` to turn off syncing.
+wandb: Syncing run esm2_lora_constraints_esm2_t30_150M_UR50D
+wandb: ⭐️ View project at https://wandb.ai/lucas-shujun-ma-duke/geotune_online
+wandb: 🚀 View run at https://wandb.ai/lucas-shujun-ma-duke/geotune_online/runs/eygfv9vq
+`torch_dtype` is deprecated! Use `dtype` instead!
+Some weights of EsmModel were not initialized from the model checkpoint at facebook/esm2_t30_150M_UR50D and are newly initialized: ['pooler.dense.bias', 'pooler.dense.weight']
+You should probably TRAIN this model on a down-stream task to be able to use it for predictions and inference.
+Traceback (most recent call last):
+  File "/work/sm996/co-amp/scripts/train.py", line 702, in <module>
+    main()
+  File "/work/sm996/co-amp/scripts/train.py", line 516, in main
+    frozen_gnn = PretrainedGNNWrapper(hidden_dim=esm_hidden_size).to(device)
+  File "/work/sm996/co-amp/utils/structure_alignment_utils.py", line 316, in __init__
+    self.backbone = create_pretrained_gearnet(
+  File "/work/sm996/co-amp/models/gearnet_model.py", line 271, in create_pretrained_gearnet
+    model = GearNetFromCoordinates(
+  File "/work/sm996/co-amp/models/gearnet_model.py", line 177, in __init__
+    self.edge_construction = geometry.EdgeConstruction(
+AttributeError: module 'torchdrug.layers.geometry' has no attribute 'EdgeConstruction'. Did you mean: 'GraphConstruction'?
+Traceback (most recent call last):
+  File "/work/sm996/co-amp/scripts/train.py", line 702, in <module>
+    main()
+  File "/work/sm996/co-amp/scripts/train.py", line 516, in main
+    frozen_gnn = PretrainedGNNWrapper(hidden_dim=esm_hidden_size).to(device)
+  File "/work/sm996/co-amp/utils/structure_alignment_utils.py", line 316, in __init__
+    self.backbone = create_pretrained_gearnet(
+  File "/work/sm996/co-amp/models/gearnet_model.py", line 271, in create_pretrained_gearnet
+    model = GearNetFromCoordinates(
+  File "/work/sm996/co-amp/models/gearnet_model.py", line 177, in __init__
+    self.edge_construction = geometry.EdgeConstruction(
+AttributeError: module 'torchdrug.layers.geometry' has no attribute 'EdgeConstruction'. Did you mean: 'GraphConstruction'?

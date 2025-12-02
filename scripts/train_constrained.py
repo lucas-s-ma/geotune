@@ -260,7 +260,7 @@ def main():
         constraint_weight=config.model.constraint_weight
     ).to(device)
     alignment_module = StructureAlignmentLoss(hidden_dim=esm_hidden_size, num_structural_classes=21).to(device)
-    gnn_module = PretrainedGNNWrapper(hidden_dim=esm_hidden_size, use_gearnet_stub=False).to(device).eval()
+    gnn_module = PretrainedGNNWrapper(hidden_dim=esm_hidden_size).to(device).eval()
 
     # --- Data ---
     full_dataset = EfficientProteinDataset(config.data.data_path, max_seq_len=config.training.max_seq_len, include_structural_tokens=True)
