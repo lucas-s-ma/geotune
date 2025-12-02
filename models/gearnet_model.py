@@ -173,27 +173,27 @@ class GearNetFromCoordinates(nn.Module):
         self.hidden_dim = hidden_dim
         self.freeze = freeze
 
-        # Create actual GearNet model from TorchDrug
+        # Import GearNet model from TorchDrug
         from torchdrug.models.gearnet import GeometryAwareRelationalGraphNeuralNetwork
+
+        # Create actual GearNet model - fix the parameters
         self.gearnet_model = GeometryAwareRelationalGraphNeuralNetwork(
-            input_dim=hidden_dim,
-            hidden_dims=[512, 512, 512, 512],
+            input_dim=3,  # Input is 3D coordinates
+            hidden_dims=[hidden_dim, hidden_dim, hidden_dim, hidden_dim],  # Match the target hidden dimension
             num_relation=7,
             batch_norm=True,
             short_cut=True,
-            concat_hidden=False,
-            readout="mean"
+            concat_hidden=False,  # Keep this False to avoid dimension issues
+            num_mlp_layer=2,
+            activation="relu",
+            dropout=0.1
         )
-
-        # Projection layer to convert from coordinate features to hidden dimension
-        # 3 coordinate dimensions (just CA for simplicity) -> hidden_dim
-        self.coord_projection = nn.Linear(3, hidden_dim)
 
         if freeze:
             for param in self.parameters():
                 param.requires_grad = False
 
-        print("Successfully created GearNet model with TorchDrug")
+        print(f"Successfully created GearNet model with TorchDrug, hidden_dim={hidden_dim}")
 
     def forward(self, n_coords, ca_coords, c_coords):
         """
@@ -222,33 +222,45 @@ class GearNetFromCoordinates(nn.Module):
         for b in range(batch_size):
             node_pos = ca_coords[b] # (seq_len, 3)
 
-            # 1. Sequential edges
+            # Create geometric graph edges
             edge_list = []
             for i in range(seq_len):
-                for offset, relation in zip([-3, -2, -1, 1, 2, 3], range(6)):
+                # Sequential edges (within ±3 residues)
+                for offset in [-3, -2, -1, 1, 2, 3]:
                     j = i + offset
                     if 0 <= j < seq_len:
-                        edge_list.append([i, j, relation])
+                        # Relations 0-5 for sequential neighbors
+                        relation_type = 0 if offset < 0 else 1  # Use simpler relation types
+                        edge_list.append([i, j, relation_type])
 
-            # 2. Spatial edges (k-NN)
-            k = 10
-            dist_matrix = torch.norm(node_pos.unsqueeze(1) - node_pos.unsqueeze(0), dim=2)
-            _, topk_indices = torch.topk(dist_matrix, k + 1, largest=False)
+            # Spatial edges (k-NN based on 3D distance)
+            if seq_len > 1:
+                dist_matrix = torch.norm(node_pos.unsqueeze(1) - node_pos.unsqueeze(0), dim=2)
+                k = min(10, seq_len - 1)  # Ensure k is not larger than sequence
+                if k > 0:
+                    _, topk_indices = torch.topk(dist_matrix, k + 1, largest=False)
 
-            for i in range(seq_len):
-                for j in topk_indices[i, 1:]: # exclude self
-                    edge_list.append([i, j.item(), 6])
+                    for i in range(seq_len):
+                        # Get k nearest neighbors (excluding self)
+                        nearest_neighbors = topk_indices[i, 1:k+1]
+                        for j in nearest_neighbors:
+                            # Relation type 2 for spatial neighbors
+                            edge_list.append([i, int(j.item()), 2])
 
-            if not edge_list:
-                edge_list = torch.empty(0, 3, dtype=torch.long, device=device)
+            if edge_list:
+                edge_list_tensor = torch.tensor(edge_list, dtype=torch.long, device=device)
             else:
-                edge_list = torch.tensor(edge_list, dtype=torch.long, device=device)
+                # If no edges (very short sequence), create self loops to avoid empty graph
+                edge_list_tensor = torch.stack([
+                    torch.arange(seq_len, device=device),
+                    torch.arange(seq_len, device=device),
+                    torch.zeros(seq_len, dtype=torch.long, device=device)  # relation type 0
+                ], dim=1)
 
             graph = data.Graph(
-                edge_list=edge_list,
+                edge_list=edge_list_tensor,
                 num_node=seq_len,
-                num_relation=7,
-                node_feature=node_pos
+                node_feature=node_pos  # Use CA coordinates as node features directly
             )
             graphs.append(graph)
 
@@ -261,63 +273,28 @@ class GearNetFromCoordinates(nn.Module):
         # Ensure the batched graph is on the correct device
         batched_graph = batched_graph.to(device)
 
-        # Convert all relevant tensors in the graph to float32 to avoid half precision issues
-        if hasattr(batched_graph, 'node_feature') and batched_graph.node_feature.dtype != torch.float:
-            batched_graph.node_feature = batched_graph.node_feature.float()
-
-        # Project coordinates to hidden dimension for node features
-        node_features = self.coord_projection(batched_graph.node_feature)
-
-        # Ensure node_features are in float32
-        node_features = node_features.float()
-
         # Pass through GearNet model in float32 mode
         with torch.cuda.amp.autocast(enabled=False):  # Disable autocast for this forward pass
-            output = self.gearnet_model(batched_graph, node_features)
+            output = self.gearnet_model(batched_graph, batched_graph.node_feature)
 
         # output["node_feature"] is (total_num_residues, hidden_dim)
         node_embeddings = output["node_feature"]
 
-        # Debug: print actual shapes to understand the issue
-        print(f"Debug - batch_size: {batch_size}, seq_len: {seq_len}, hidden_dim: {self.hidden_dim}")
-        print(f"Debug - node_embeddings shape: {node_embeddings.shape}")
-        print(f"Debug - expected total nodes: {batch_size * seq_len}, actual nodes: {node_embeddings.size(0)}")
-
-        # The output from GearNet is for all nodes in the batch, so we reshape properly
-        # Make sure the number of nodes matches what we expect: batch_size * seq_len
+        # The output should have the right size for reshaping
         expected_nodes = batch_size * seq_len
-        actual_nodes = node_embeddings.size(0)
 
-        if actual_nodes != expected_nodes:
-            # Handle case where the number of nodes might be different
-            # This can happen if there are issues with graph construction
-            # For now, we'll reshape according to the actual tensor size
-            print(f"Warning: Expected {expected_nodes} nodes but got {actual_nodes} nodes. Adjusting reshape accordingly.")
+        if node_embeddings.size(0) != expected_nodes:
+            raise RuntimeError(
+                f"GearNet output size mismatch: got {node_embeddings.size(0)}, "
+                f"expected {expected_nodes} (batch_size={batch_size}, seq_len={seq_len})"
+            )
 
-            # Try to infer the actual sequence length
-            if actual_nodes % batch_size == 0:
-                actual_seq_len = actual_nodes // batch_size
-                final_embeddings = node_embeddings.view(batch_size, actual_seq_len, self.hidden_dim)
-            else:
-                # Fallback: if sizes don't divide evenly, use the original sequence length
-                # and truncate or pad as needed
-                if actual_nodes < expected_nodes:
-                    # If we have fewer nodes than expected, pad with zeros
-                    padding_size = expected_nodes - actual_nodes
-                    padding = torch.zeros(padding_size, self.hidden_dim, device=node_embeddings.device, dtype=node_embeddings.dtype)
-                    padded_embeddings = torch.cat([node_embeddings, padding], dim=0)
-                    final_embeddings = padded_embeddings.view(batch_size, seq_len, self.hidden_dim)
-                else:
-                    # If we have more nodes than expected, truncate
-                    final_embeddings = node_embeddings[:expected_nodes].view(batch_size, seq_len, self.hidden_dim)
-        else:
-            # Standard case: reshape as expected
-            final_embeddings = node_embeddings.view(batch_size, seq_len, self.hidden_dim)
+        # Reshape to expected format: (batch_size, seq_len, hidden_dim)
+        final_embeddings = node_embeddings.view(batch_size, seq_len, self.hidden_dim)
 
-        # If the original input was half, we might want to convert the output back to half
-        # but for safety and to maintain precision during training, we'll keep it as float32
+        # If the original input was half, convert the output back to half
         if is_half:
-            final_embeddings = final_embeddings.to(dtype=ca_coords.dtype)  # Use original input dtype
+            final_embeddings = final_embeddings.to(dtype=ca_coords.dtype)
 
         return final_embeddings
 

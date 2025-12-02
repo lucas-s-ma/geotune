@@ -1,0 +1,52 @@
+code-server 4.96.4
+wandb: Currently logged in as: lucas-shujun-ma (lucas-shujun-ma-duke) to https://api.wandb.ai. Use `wandb login --relogin` to force relogin
+wandb: setting up run iwxgruy2
+wandb: Tracking run with wandb version 0.22.3
+wandb: Run data is saved locally in /work/sm996/co-amp/wandb/run-20251202_163459-iwxgruy2
+wandb: Run `wandb offline` to turn off syncing.
+wandb: Syncing run esm2_lora_constraints_esm2_t30_150M_UR50D
+wandb: ⭐️ View project at https://wandb.ai/lucas-shujun-ma-duke/geotune_online
+wandb: 🚀 View run at https://wandb.ai/lucas-shujun-ma-duke/geotune_online/runs/iwxgruy2
+`torch_dtype` is deprecated! Use `dtype` instead!
+Some weights of EsmModel were not initialized from the model checkpoint at facebook/esm2_t30_150M_UR50D and are newly initialized: ['pooler.dense.bias', 'pooler.dense.weight']
+You should probably TRAIN this model on a down-stream task to be able to use it for predictions and inference.
+Traceback (most recent call last):
+  File "/work/sm996/co-amp/scripts/train.py", line 703, in <module>
+    main()
+  File "/work/sm996/co-amp/scripts/train.py", line 515, in main
+    frozen_gnn = PretrainedGNNWrapper(
+  File "/work/sm996/co-amp/utils/structure_alignment_utils.py", line 316, in __init__
+    self.backbone = create_pretrained_gearnet(
+  File "/work/sm996/co-amp/models/gearnet_model.py", line 314, in create_pretrained_gearnet
+    model = GearNetFromCoordinates(
+  File "/work/sm996/co-amp/models/gearnet_model.py", line 180, in __init__
+    self.gearnet_model = GeometryAwareRelationalGraphNeuralNetwork(
+  File "/hpc/group/naderilab/sm996/miniconda3/envs/geo_project/lib/python3.10/site-packages/decorator.py", line 234, in fun
+    args, kw = fix(args, kw, sig)
+  File "/hpc/group/naderilab/sm996/miniconda3/envs/geo_project/lib/python3.10/site-packages/decorator.py", line 204, in fix
+    ba = sig.bind(*args, **kwargs)
+  File "/hpc/group/naderilab/sm996/miniconda3/envs/geo_project/lib/python3.10/inspect.py", line 3186, in bind
+    return self._bind(args, kwargs)
+  File "/hpc/group/naderilab/sm996/miniconda3/envs/geo_project/lib/python3.10/inspect.py", line 3175, in _bind
+    raise TypeError(
+TypeError: got an unexpected keyword argument 'num_mlp_layer'
+Traceback (most recent call last):
+  File "/work/sm996/co-amp/scripts/train.py", line 703, in <module>
+    main()
+  File "/work/sm996/co-amp/scripts/train.py", line 515, in main
+    frozen_gnn = PretrainedGNNWrapper(
+  File "/work/sm996/co-amp/utils/structure_alignment_utils.py", line 316, in __init__
+    self.backbone = create_pretrained_gearnet(
+  File "/work/sm996/co-amp/models/gearnet_model.py", line 314, in create_pretrained_gearnet
+    model = GearNetFromCoordinates(
+  File "/work/sm996/co-amp/models/gearnet_model.py", line 180, in __init__
+    self.gearnet_model = GeometryAwareRelationalGraphNeuralNetwork(
+  File "/hpc/group/naderilab/sm996/miniconda3/envs/geo_project/lib/python3.10/site-packages/decorator.py", line 234, in fun
+    args, kw = fix(args, kw, sig)
+  File "/hpc/group/naderilab/sm996/miniconda3/envs/geo_project/lib/python3.10/site-packages/decorator.py", line 204, in fix
+    ba = sig.bind(*args, **kwargs)
+  File "/hpc/group/naderilab/sm996/miniconda3/envs/geo_project/lib/python3.10/inspect.py", line 3186, in bind
+    return self._bind(args, kwargs)
+  File "/hpc/group/naderilab/sm996/miniconda3/envs/geo_project/lib/python3.10/inspect.py", line 3175, in _bind
+    raise TypeError(
+TypeError: got an unexpected keyword argument 'num_mlp_layer'
