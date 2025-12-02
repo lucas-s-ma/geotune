@@ -513,7 +513,7 @@ def main():
 
     # Initialize frozen pre-trained GNN (e.g. GearNet) - use stub to avoid TorchDrug dependency
     # Set use_gearnet_stub=True to avoid TorchDrug/RDKit compatibility issues
-    frozen_gnn = PretrainedGNNWrapper(hidden_dim=esm_hidden_size, use_gearnet_stub=False).to(device)
+    frozen_gnn = PretrainedGNNWrapper(hidden_dim=esm_hidden_size).to(device)
     frozen_gnn.eval()  # Set to evaluation mode to ensure no gradients
 
     # Load dataset
