@@ -207,6 +207,12 @@ class GearNetFromCoordinates(nn.Module):
         Returns:
             embeddings: (batch_size, seq_len, hidden_dim) structural embeddings
         """
+        # Ensure input tensors are float32 to avoid sparse CUDA errors with mixed precision
+        if ca_coords.dtype == torch.half:
+            n_coords = n_coords.float()
+            ca_coords = ca_coords.float()
+            c_coords = c_coords.float()
+
         batch_size, seq_len, _ = ca_coords.shape
         device = ca_coords.device
 
@@ -254,11 +260,6 @@ class GearNetFromCoordinates(nn.Module):
 
         # Project coordinates to hidden dimension for node features
         node_features = self.coord_projection(batched_graph.node_feature)
-
-        # Ensure tensors are float32 to avoid "addmm_sparse_cuda" not implemented for 'Half'
-        if node_features.dtype == torch.half:
-            batched_graph = batched_graph.float()
-            node_features = node_features.float()
 
         # Pass through GearNet model
         output = self.gearnet_model(batched_graph, node_features)
