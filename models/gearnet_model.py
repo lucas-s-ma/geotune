@@ -173,8 +173,12 @@ class GearNetFromCoordinates(nn.Module):
         self.hidden_dim = hidden_dim
         self.freeze = freeze
 
+        # Edge construction layer
+        self.edge_construction = geometry.EdgeConstruction(
+            knn=10, num_relation=7, radius_cutoff=None
+        )
+
         # Create actual GearNet model from TorchDrug
-        # Import here to avoid ESM-related import issues
         from torchdrug.models.gearnet import GeometryAwareRelationalGraphNeuralNetwork
         self.gearnet_model = GeometryAwareRelationalGraphNeuralNetwork(
             input_dim=hidden_dim,
@@ -187,8 +191,8 @@ class GearNetFromCoordinates(nn.Module):
         )
         
         # Projection layer to convert from coordinate features to hidden dimension
-        # 9 coordinate dimensions (N, CA, C * 3D) -> hidden_dim
-        self.coord_projection = nn.Linear(9, hidden_dim)
+        # 3 coordinate dimensions (just CA for simplicity) -> hidden_dim
+        self.coord_projection = nn.Linear(3, hidden_dim)
         
         if freeze:
             for param in self.parameters():
@@ -209,17 +213,47 @@ class GearNetFromCoordinates(nn.Module):
             embeddings: (batch_size, seq_len, hidden_dim) structural embeddings
         """
         batch_size, seq_len, _ = ca_coords.shape
+        device = ca_coords.device
 
-        # Concatenate coordinates to form features for each node
-        coords = torch.cat([n_coords, ca_coords, c_coords], dim=-1)  # (B, L, 9)
+        # We will build a graph based on CA atoms for simplicity, as this is common.
+        # The nodes of the graph are the residues (represented by CA atoms).
+        
+        graphs = []
+        for b in range(batch_size):
+            # Use CA coordinates as node positions
+            node_pos = ca_coords[b] # (seq_len, 3)
+            
+            # Create a graph structure for a single protein
+            graph = data.Graph(
+                num_node=seq_len,
+                node_position=node_pos
+            )
+            graphs.append(graph)
 
-        # Project coordinates to hidden dimension
-        node_features = self.coord_projection(coords)  # (B, L, hidden_dim)
+        # Batch the graphs
+        if len(graphs) > 1:
+            batched_graph = data.graph_collate(graphs)
+        else:
+            batched_graph = graphs[0]
+            
+        batched_graph = batched_graph.to(device)
 
-        # Create a mock graph structure that TorchDrug expects
-        # For now, we'll just return the projected features
-        # In a complete implementation, we'd create an actual graph from coordinates
-        return node_features
+        # Construct edges and relations
+        batched_graph = self.edge_construction(batched_graph)
+
+        # Project coordinates to hidden dimension for node features
+        node_features = self.coord_projection(batched_graph.node_position)
+
+        # Pass through GearNet model
+        output = self.gearnet_model(batched_graph, node_features)
+        
+        # output["node_feature"] is (total_num_residues, hidden_dim)
+        node_embeddings = output["node_feature"]
+        
+        # Reshape to (batch_size, seq_len, hidden_dim)
+        final_embeddings = node_embeddings.view(batch_size, seq_len, self.hidden_dim)
+
+        return final_embeddings
 
 
 def create_pretrained_gearnet(hidden_dim=512, pretrained_path=None, freeze=True):
