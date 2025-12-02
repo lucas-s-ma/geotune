@@ -173,21 +173,41 @@ class GearNetFromCoordinates(nn.Module):
         self.hidden_dim = hidden_dim
         self.freeze = freeze
 
-        # Import GearNet model from TorchDrug
-        from torchdrug.models.gearnet import GeometryAwareRelationalGraphNeuralNetwork
+        # Create actual GearNet model with parameters that work across different TorchDrug versions
+        # The exact API can vary depending on the version of TorchDrug you have installed
+        gearnet_kwargs = {
+            'input_dim': 3,  # Input is 3D coordinates
+            'hidden_dim': hidden_dim,
+            'num_relation': 7,
+            'batch_norm': True,
+            'short_cut': True,
+            'concat_hidden': False
+        }
 
-        # Create actual GearNet model - fix the parameters
-        self.gearnet_model = GeometryAwareRelationalGraphNeuralNetwork(
-            input_dim=3,  # Input is 3D coordinates
-            hidden_dims=[hidden_dim, hidden_dim, hidden_dim, hidden_dim],  # Match the target hidden dimension
-            num_relation=7,
-            batch_norm=True,
-            short_cut=True,
-            concat_hidden=False,  # Keep this False to avoid dimension issues
-            num_mlp_layer=2,
-            activation="relu",
-            dropout=0.1
-        )
+        # Attempt to create the model, handling different API versions
+        try:
+            self.gearnet_model = GeometryAwareRelationalGraphNeuralNetwork(**gearnet_kwargs)
+        except TypeError:
+            # If some parameters are not accepted, try with minimal parameters
+            # Different versions of TorchDrug may have different parameter names
+            try:
+                # Some versions use 'hidden_dims' (plural) instead of 'hidden_dim'
+                gearnet_kwargs_alt = {
+                    'input_dim': 3,
+                    'hidden_dims': [hidden_dim] * 4,  # Use a list instead
+                    'num_relation': 7,
+                    'batch_norm': True,
+                    'short_cut': True,
+                    'concat_hidden': False
+                }
+                self.gearnet_model = GeometryAwareRelationalGraphNeuralNetwork(**gearnet_kwargs_alt)
+            except TypeError:
+                # Try with minimal required parameters only
+                self.gearnet_model = GeometryAwareRelationalGraphNeuralNetwork(
+                    input_dim=3,
+                    hidden_dim=hidden_dim,
+                    num_relation=7
+                )
 
         if freeze:
             for param in self.parameters():
