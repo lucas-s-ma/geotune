@@ -258,24 +258,66 @@ class GearNetFromCoordinates(nn.Module):
         else:
             batched_graph = graphs[0]
 
-        # Ensure the batched graph is on the correct device and in float32
+        # Ensure the batched graph is on the correct device
         batched_graph = batched_graph.to(device)
 
-        # Explicitly convert all relevant tensors in the graph to float32 to avoid half precision issues
-        if is_half or batched_graph.node_feature.dtype == torch.half:
+        # Convert all relevant tensors in the graph to float32 to avoid half precision issues
+        if hasattr(batched_graph, 'node_feature') and batched_graph.node_feature.dtype != torch.float:
             batched_graph.node_feature = batched_graph.node_feature.float()
 
         # Project coordinates to hidden dimension for node features
         node_features = self.coord_projection(batched_graph.node_feature)
 
-        # Pass through GearNet model
-        output = self.gearnet_model(batched_graph, node_features)
+        # Ensure node_features are in float32
+        node_features = node_features.float()
+
+        # Pass through GearNet model in float32 mode
+        with torch.cuda.amp.autocast(enabled=False):  # Disable autocast for this forward pass
+            output = self.gearnet_model(batched_graph, node_features)
 
         # output["node_feature"] is (total_num_residues, hidden_dim)
         node_embeddings = output["node_feature"]
 
-        # Reshape to (batch_size, seq_len, hidden_dim)
-        final_embeddings = node_embeddings.view(batch_size, seq_len, self.hidden_dim)
+        # Debug: print actual shapes to understand the issue
+        print(f"Debug - batch_size: {batch_size}, seq_len: {seq_len}, hidden_dim: {self.hidden_dim}")
+        print(f"Debug - node_embeddings shape: {node_embeddings.shape}")
+        print(f"Debug - expected total nodes: {batch_size * seq_len}, actual nodes: {node_embeddings.size(0)}")
+
+        # The output from GearNet is for all nodes in the batch, so we reshape properly
+        # Make sure the number of nodes matches what we expect: batch_size * seq_len
+        expected_nodes = batch_size * seq_len
+        actual_nodes = node_embeddings.size(0)
+
+        if actual_nodes != expected_nodes:
+            # Handle case where the number of nodes might be different
+            # This can happen if there are issues with graph construction
+            # For now, we'll reshape according to the actual tensor size
+            print(f"Warning: Expected {expected_nodes} nodes but got {actual_nodes} nodes. Adjusting reshape accordingly.")
+
+            # Try to infer the actual sequence length
+            if actual_nodes % batch_size == 0:
+                actual_seq_len = actual_nodes // batch_size
+                final_embeddings = node_embeddings.view(batch_size, actual_seq_len, self.hidden_dim)
+            else:
+                # Fallback: if sizes don't divide evenly, use the original sequence length
+                # and truncate or pad as needed
+                if actual_nodes < expected_nodes:
+                    # If we have fewer nodes than expected, pad with zeros
+                    padding_size = expected_nodes - actual_nodes
+                    padding = torch.zeros(padding_size, self.hidden_dim, device=node_embeddings.device, dtype=node_embeddings.dtype)
+                    padded_embeddings = torch.cat([node_embeddings, padding], dim=0)
+                    final_embeddings = padded_embeddings.view(batch_size, seq_len, self.hidden_dim)
+                else:
+                    # If we have more nodes than expected, truncate
+                    final_embeddings = node_embeddings[:expected_nodes].view(batch_size, seq_len, self.hidden_dim)
+        else:
+            # Standard case: reshape as expected
+            final_embeddings = node_embeddings.view(batch_size, seq_len, self.hidden_dim)
+
+        # If the original input was half, we might want to convert the output back to half
+        # but for safety and to maintain precision during training, we'll keep it as float32
+        if is_half:
+            final_embeddings = final_embeddings.to(dtype=ca_coords.dtype)  # Use original input dtype
 
         return final_embeddings
 

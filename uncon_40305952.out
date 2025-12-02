@@ -34,6 +34,9 @@ Starting training for 10 epochs...
 Effective batch size: 64
 
 Epoch 1/10
+Debug - batch_size: 16, seq_len: 512, hidden_dim: 640
+Debug - node_embeddings shape: torch.Size([8192, 512])
+Debug - expected total nodes: 8192, actual nodes: 8192
 [1;34mwandb[0m: 
 [1;34mwandb[0m: 🚀 View run [33mesm2_lora_constraints_esm2_t30_150M_UR50D[0m at: [34m[0m
-[1;34mwandb[0m: Find logs at: [1;35mwandb/run-20251202_160217-fyhplu1r/logs[0m
+[1;34mwandb[0m: Find logs at: [1;35mwandb/run-20251202_111956-e3jzash8/logs[0m
