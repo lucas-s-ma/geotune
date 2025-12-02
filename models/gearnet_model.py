@@ -173,11 +173,6 @@ class GearNetFromCoordinates(nn.Module):
         self.hidden_dim = hidden_dim
         self.freeze = freeze
 
-        # Edge construction layer
-        self.edge_construction = geometry.EdgeConstruction(
-            knn=10, num_relation=7, radius_cutoff=None
-        )
-
         # Create actual GearNet model from TorchDrug
         from torchdrug.models.gearnet import GeometryAwareRelationalGraphNeuralNetwork
         self.gearnet_model = GeometryAwareRelationalGraphNeuralNetwork(
@@ -215,18 +210,37 @@ class GearNetFromCoordinates(nn.Module):
         batch_size, seq_len, _ = ca_coords.shape
         device = ca_coords.device
 
-        # We will build a graph based on CA atoms for simplicity, as this is common.
-        # The nodes of the graph are the residues (represented by CA atoms).
-        
         graphs = []
         for b in range(batch_size):
-            # Use CA coordinates as node positions
             node_pos = ca_coords[b] # (seq_len, 3)
             
-            # Create a graph structure for a single protein
+            # 1. Sequential edges
+            edge_list = []
+            for i in range(seq_len):
+                for offset, relation in zip([-3, -2, -1, 1, 2, 3], range(6)):
+                    j = i + offset
+                    if 0 <= j < seq_len:
+                        edge_list.append([i, j, relation])
+            
+            # 2. Spatial edges (k-NN)
+            k = 10
+            dist_matrix = torch.norm(node_pos.unsqueeze(1) - node_pos.unsqueeze(0), dim=2)
+            _, topk_indices = torch.topk(dist_matrix, k + 1, largest=False)
+            
+            for i in range(seq_len):
+                for j in topk_indices[i, 1:]: # exclude self
+                    edge_list.append([i, j.item(), 6])
+
+            if not edge_list:
+                edge_list = torch.empty(0, 3, dtype=torch.long, device=device)
+            else:
+                edge_list = torch.tensor(edge_list, dtype=torch.long, device=device)
+
             graph = data.Graph(
+                edge_list=edge_list,
                 num_node=seq_len,
-                node_position=node_pos
+                num_relation=7,
+                node_feature=node_pos
             )
             graphs.append(graph)
 
@@ -238,11 +252,8 @@ class GearNetFromCoordinates(nn.Module):
             
         batched_graph = batched_graph.to(device)
 
-        # Construct edges and relations
-        batched_graph = self.edge_construction(batched_graph)
-
         # Project coordinates to hidden dimension for node features
-        node_features = self.coord_projection(batched_graph.node_position)
+        node_features = self.coord_projection(batched_graph.node_feature)
 
         # Pass through GearNet model
         output = self.gearnet_model(batched_graph, node_features)
