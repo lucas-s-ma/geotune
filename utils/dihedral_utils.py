@@ -79,19 +79,21 @@ class DihedralAngleConstraint(nn.Module):
     """
     Implements constraints based on dihedral angles (phi/psi) 
     """
-    def __init__(self, constraint_weight=1.0):
+    def __init__(self, hidden_dim, constraint_weight=1.0):
         super().__init__()
         self.constraint_weight = constraint_weight
         
-        # Linear layers to predict dihedral angles from embeddings
-        # We'll predict cosines of phi and psi angles
-        self.phi_predictor = nn.Linear(640, 1)  # Assuming hidden size of 640 for ESM
-        self.psi_predictor = nn.Linear(640, 1)
+        # Use a more robust loss function
+        self.loss_fn = nn.SmoothL1Loss(reduction='none')
         
-        # Initialize layers with small random weights
-        nn.init.xavier_uniform_(self.phi_predictor.weight)
+        # Linear layers to predict dihedral angles from embeddings
+        self.phi_predictor = nn.Linear(hidden_dim, 1)
+        self.psi_predictor = nn.Linear(hidden_dim, 1)
+        
+        # Standard initialization
+        nn.init.xavier_uniform_(self.phi_predictor.weight, gain=nn.init.calculate_gain('tanh'))
         nn.init.zeros_(self.phi_predictor.bias)
-        nn.init.xavier_uniform_(self.psi_predictor.weight)
+        nn.init.xavier_uniform_(self.psi_predictor.weight, gain=nn.init.calculate_gain('tanh'))
         nn.init.zeros_(self.psi_predictor.bias)
 
     def forward(self, sequence_embeddings, n_coords, ca_coords, c_coords, attention_mask=None):
@@ -153,31 +155,50 @@ class DihedralAngleConstraint(nn.Module):
     
     def angle_consistency_loss(self, true_cos, pred_cos, attention_mask=None, angle_type='phi'):
         """
-        Calculate loss between true and predicted angle cosines
+        Calculate loss between true and predicted angle cosines using Smooth L1 Loss.
         """
         if true_cos.numel() == 0 or pred_cos.numel() == 0:
             return torch.tensor(0.0, device=true_cos.device, requires_grad=True)
         
-        # Ensure shapes match
         min_len = min(true_cos.shape[1], pred_cos.shape[1])
         true_cos = true_cos[:, :min_len]
         pred_cos = pred_cos[:, :min_len]
         
-        # Calculate cosine difference loss (L1 or L2 - L1 often works better for angles)
-        cos_diff = torch.abs(true_cos - pred_cos)
-        angle_loss = torch.mean(cos_diff)
+        loss = self.loss_fn(pred_cos, true_cos)
         
-        # Apply mask if available
         if attention_mask is not None:
-            # Different mask positions depending on angle type
             if angle_type == 'phi':
-                # Phi angles calculated from position 1 (residue 1), so mask from position 1
                 valid_mask = attention_mask[:, 1:1+min_len].float()
-            else:  # psi
-                # Psi angles calculated up to position seq_len-2, so mask from position 0
+            else:
                 valid_mask = attention_mask[:, :min_len].float()
             
             if valid_mask.sum() > 0:
-                angle_loss = torch.sum(cos_diff * valid_mask) / torch.sum(valid_mask)
+                loss = (loss * valid_mask).sum() / valid_mask.sum()
+            else:
+                loss = torch.tensor(0.0, device=true_cos.device, requires_grad=True)
         
         return angle_loss
+
+import matplotlib.pyplot as plt
+
+def visualize_dihedral_distribution(true_cos, pred_cos, angle_type, save_path="dihedral_distribution.png"):
+    """
+    Visualizes the distribution of true vs. predicted dihedral angles.
+    """
+    true_cos = true_cos.detach().cpu().numpy().flatten()
+    pred_cos = pred_cos.detach().cpu().numpy().flatten()
+    
+    plt.figure(figsize=(8, 8))
+    plt.scatter(true_cos, pred_cos, alpha=0.5)
+    plt.plot([-1, 1], [-1, 1], 'r--')
+    plt.xlabel(f"True cos({angle_type})")
+    plt.ylabel(f"Predicted cos({angle_type})")
+    plt.title(f"True vs. Predicted cos({angle_type})")
+    plt.xlim(-1.1, 1.1)
+    plt.ylim(-1.1, 1.1)
+    plt.grid(True)
+    
+    # Save the plot
+    plt.savefig(save_path)
+    print(f"Dihedral distribution plot saved to {save_path}")
+    plt.close()

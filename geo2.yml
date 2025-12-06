@@ -633,6 +633,7 @@ dependencies:
       - safetensors==0.4.3
       - scikit-learn==1.5.0
       - scikit-learn-extra==0.3.0
+      - seaborn>=0.11.0
       - send2trash==1.8.3
       - sentence-transformers==3.4.0
       - setuptools==80.9.0

@@ -81,10 +81,7 @@ def generate_gearnet_embeddings_for_dataset(processed_dataset_path, output_dir, 
     print(f"Using device: {device}")
 
     model = PretrainedGNNWrapper(
-        model_path=model_path,
         hidden_dim=hidden_dim,
-        freeze=True,
-        use_gearnet_stub=False  # Try to use proper implementation first
     ).to(device)
 
     model.eval()  # Set to evaluation mode

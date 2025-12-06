@@ -112,6 +112,27 @@ def convert_3di_to_ints(ascii_seq: str) -> List[int]:
         tokens.append(token)
     return tokens
 
+import pickle
+import matplotlib.pyplot as plt
+import numpy as np
+
+def visualize_token_distribution(tokens: List[int]):
+    """
+    Visualizes the distribution of generated tokens.
+    """
+    plt.figure(figsize=(10, 6))
+    plt.hist(tokens, bins=np.arange(22) - 0.5, rwidth=0.8)
+    plt.xticks(range(21))
+    plt.xlabel("Token ID")
+    plt.ylabel("Frequency")
+    plt.title("Distribution of 3Di Structural Tokens")
+    
+    # Save the plot
+    plot_path = "token_distribution.png"
+    plt.savefig(plot_path)
+    print(f"Token distribution plot saved to {plot_path}")
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Generate Foldseek 3Di structural tokens directly from a PDB file."
@@ -121,6 +142,17 @@ def main():
         type=str, 
         required=True, 
         help="Path to the input PDB file."
+    )
+    parser.add_argument(
+        "--output_file",
+        type=str,
+        default=None,
+        help="Path to save the generated tokens as a pickle file."
+    )
+    parser.add_argument(
+        "--visualize",
+        action="store_true",
+        help="Visualize the token distribution."
     )
     
     args = parser.parse_args()
@@ -134,6 +166,17 @@ def main():
             print(f"Last 20 tokens: {tokens[-20:]}")
         else:
             print(f"Tokens: {tokens}")
+
+        if args.output_file:
+            protein_id = Path(args.pdb_file).stem
+            data_to_save = [{'protein_id': protein_id, 'structural_tokens': tokens}]
+            with open(args.output_file, 'wb') as f:
+                pickle.dump(data_to_save, f)
+            print(f"Tokens saved to {args.output_file}")
+
+        if args.visualize:
+            visualize_token_distribution(tokens)
+
     else:
         print(f"\nFailed to generate structural tokens for {args.pdb_file}.")
         exit(1)

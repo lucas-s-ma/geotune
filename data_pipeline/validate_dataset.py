@@ -98,7 +98,7 @@ def validate_structural_tokens(token_path):
         return False
 
 
-def validate_gearnet_embeddings(embeddings_path):
+def validate_gearnet_embeddings(embeddings_path, expected_dim=None):
     """Validate the GearNet embeddings directory"""
     print(f"Validating GearNet embeddings: {embeddings_path}")
     
@@ -106,30 +106,66 @@ def validate_gearnet_embeddings(embeddings_path):
         print(f"❌ Error: Embeddings directory not found at {embeddings_path}")
         return False
     
-    # Check for the main embeddings file
-    main_embeddings_file = os.path.join(embeddings_path, "gearnet_embeddings.pkl")
-    if os.path.exists(main_embeddings_file):
-        print(f"✅ Found main embeddings file: {main_embeddings_file}")
-        
-        try:
-            with open(main_embeddings_file, 'rb') as f:
-                embeddings_dict = pickle.load(f)
-            print(f"✅ Found {len(embeddings_dict)} protein embeddings")
-        except Exception as e:
-            print(f"❌ Error reading main embeddings file: {e}")
-            return False
-    
-    # Check for individual embedding files
     embedding_files = [f for f in os.listdir(embeddings_path) if f.endswith('_gearnet_embeddings.pkl')]
+    if not embedding_files:
+        print("⚠️ Warning: No individual embedding files found.")
+        return True # Not a failure, but a warning
+
     print(f"✅ Found {len(embedding_files)} individual embedding files")
-    
+
+    if expected_dim is not None:
+        # Check dimension of a sample embedding
+        try:
+            sample_file = os.path.join(embeddings_path, embedding_files[0])
+            with open(sample_file, 'rb') as f:
+                sample_data = pickle.load(f)
+                embedding_dim = sample_data['embeddings'].shape[-1]
+                if embedding_dim != expected_dim:
+                    print(f"❌ Error: Embedding dimension mismatch. Expected {expected_dim}, found {embedding_dim}")
+                    return False
+            print(f"✅ Embedding dimension is correct ({expected_dim})")
+        except Exception as e:
+            print(f"❌ Error checking embedding dimension: {e}")
+            return False
+            
     return True
+
+
+def validate_dataset_integrity(dataset_path, embeddings_path):
+    """Validate the integrity between the processed dataset and embeddings"""
+    print("Validating dataset integrity...")
+    
+    try:
+        with open(dataset_path, 'rb') as f:
+            proteins = pickle.load(f)
+        protein_ids = {p['id'] for p in proteins}
+        
+        embedding_files = [f for f in os.listdir(embeddings_path) if f.endswith('_gearnet_embeddings.pkl')]
+        embedding_ids = {f.replace('_gearnet_embeddings.pkl', '') for f in embedding_files}
+        
+        missing_embeddings = protein_ids - embedding_ids
+        if missing_embeddings:
+            print(f"❌ Error: {len(missing_embeddings)} proteins are missing embeddings (e.g., {list(missing_embeddings)[:5]})")
+            return False
+            
+        extra_embeddings = embedding_ids - protein_ids
+        if extra_embeddings:
+            print(f"⚠️ Warning: {len(extra_embeddings)} embeddings do not have a corresponding protein in the dataset (e.g., {list(extra_embeddings)[:5]})")
+            
+        print("✅ Dataset integrity is valid")
+        return True
+        
+    except Exception as e:
+        print(f"❌ Error validating dataset integrity: {e}")
+        return False
 
 
 def main():
     parser = argparse.ArgumentParser(description="Validate data pipeline outputs")
     parser.add_argument("--data_dir", type=str, required=True,
                         help="Directory containing processed data files")
+    parser.add_argument("--embedding_dim", type=int, default=512,
+                        help="Expected dimension of GearNet embeddings")
     
     args = parser.parse_args()
     
@@ -143,14 +179,16 @@ def main():
     # Validate each component
     dataset_valid = validate_processed_dataset(dataset_path)
     tokens_valid = validate_structural_tokens(token_path)
-    embeddings_valid = validate_gearnet_embeddings(embeddings_path)
+    embeddings_valid = validate_gearnet_embeddings(embeddings_path, expected_dim=args.embedding_dim)
+    integrity_valid = validate_dataset_integrity(dataset_path, embeddings_path)
     
     print("\n📊 Validation Summary:")
     print(f"Processed dataset: {'✅ VALID' if dataset_valid else '❌ INVALID'}")
     print(f"Structural tokens: {'✅ VALID' if tokens_valid else '❌ INVALID'}")
     print(f"GearNet embeddings: {'✅ VALID' if embeddings_valid else '❌ INVALID'}")
+    print(f"Dataset integrity: {'✅ VALID' if integrity_valid else '❌ INVALID'}")
     
-    if all([dataset_valid, tokens_valid, embeddings_valid]):
+    if all([dataset_valid, tokens_valid, embeddings_valid, integrity_valid]):
         print("\n🎉 All pipeline components are valid!")
         return 0
     else:

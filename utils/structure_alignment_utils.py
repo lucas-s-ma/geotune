@@ -6,6 +6,25 @@ Implementation of the dual-task framework from 'Structure-Aligned Protein Langua
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import seaborn as sns
+import matplotlib.pyplot as plt
+from sklearn.metrics import confusion_matrix
+
+class LabelSmoothingCrossEntropy(nn.Module):
+    """
+    Label smoothing cross-entropy loss.
+    """
+    def __init__(self, smoothing=0.1):
+        super(LabelSmoothingCrossEntropy, self).__init__()
+        self.smoothing = smoothing
+
+    def forward(self, input, target):
+        log_prob = F.log_softmax(input, dim=-1)
+        weight = input.new_ones(input.size()) * self.smoothing / (input.size(-1) - 1.)
+        weight.scatter_(-1, target.unsqueeze(-1), (1. - self.smoothing))
+        loss = (-weight * log_prob).sum(dim=-1).mean()
+        return loss
+
 
 
 class StructureAlignmentLoss(nn.Module):
@@ -15,21 +34,12 @@ class StructureAlignmentLoss(nn.Module):
     def __init__(
         self,
         hidden_dim: int,
-        num_structural_classes: int = 21,  # Default to 21 for Foldseek (20 + X)
+        num_structural_classes: int = 21,
         shared_projection_dim: int = 512,
         latent_weight: float = 0.5,
-        physical_weight: float = 0.5
+        physical_weight: float = 0.5,
+        label_smoothing: float = 0.1
     ):
-        """
-        Initialize the structure alignment loss module
-
-        Args:
-            hidden_dim: Dimension of the protein language model embeddings
-            num_structural_classes: Number of structural alphabet classes (default 20 for Foldseek)
-            shared_projection_dim: Dimension of the shared space for contrastive learning
-            latent_weight: Weight for the latent-level loss
-            physical_weight: Weight for the physical-level loss
-        """
         super().__init__()
 
         self.hidden_dim = hidden_dim
@@ -38,25 +48,32 @@ class StructureAlignmentLoss(nn.Module):
         self.latent_weight = latent_weight
         self.physical_weight = physical_weight
 
-        # Projection layers for latent-level loss
+        # Projection layers
         self.pLM_projection = nn.Linear(hidden_dim, shared_projection_dim)
-        self.pGNN_projection = nn.Linear(hidden_dim, shared_projection_dim)  # Assuming pGNN has same hidden dim
+        self.pGNN_projection = nn.Linear(hidden_dim, shared_projection_dim)
 
-        # Learnable temperature parameter for contrastive learning
-        self.temperature = nn.Parameter(torch.tensor(1.0))  # Initialize with value of 1.0
+        self.temperature = nn.Parameter(torch.tensor(1.0))
 
-        # MLP head for physical-level loss (structural token prediction)
+        # Prediction head with improved initialization
         self.structural_prediction_head = nn.Sequential(
-            nn.Linear(hidden_dim, hidden_dim // 2),
+            nn.Linear(hidden_dim, hidden_dim),
             nn.ReLU(),
+            nn.LayerNorm(hidden_dim),
             nn.Dropout(0.1),
-            nn.Linear(hidden_dim // 2, hidden_dim // 4),
-            nn.ReLU(),
-            nn.Dropout(0.1),
-            nn.Linear(hidden_dim // 4, num_structural_classes)
+            nn.Linear(hidden_dim, num_structural_classes)
         )
+        self._init_weights(self.structural_prediction_head)
 
-        self.ce_loss = nn.CrossEntropyLoss(ignore_index=-100)
+        self.physical_loss_fn = LabelSmoothingCrossEntropy(smoothing=label_smoothing)
+
+    def _init_weights(self, module):
+        if isinstance(module, nn.Linear):
+            nn.init.xavier_uniform_(module.weight)
+            if module.bias is not None:
+                nn.init.zeros_(module.bias)
+        elif isinstance(module, nn.LayerNorm):
+            nn.init.ones_(module.weight)
+            nn.init.zeros_(module.bias)
 
     def forward(
         self,
@@ -203,98 +220,50 @@ class StructureAlignmentLoss(nn.Module):
         Calculate the physical-level loss for structural token prediction with per-sample outputs
         """
         batch_size, seq_len, hidden_dim = pLM_embeddings.shape
+        logits = self.structural_prediction_head(pLM_embeddings)
 
-        # Predict structural tokens
-        logits = self.structural_prediction_head(pLM_embeddings)  # (batch_size, seq_len, num_classes)
-
-        # Calculate per-sample physical losses
         physical_loss_per_sample = torch.zeros(batch_size, device=pLM_embeddings.device)
 
         for i in range(batch_size):
-            # Get logits and tokens for single sample
-            logits_single = logits[i]  # (seq_len, num_classes)
-            tokens_single = structure_tokens[i]  # (seq_len,)
+            logits_single = logits[i]
+            tokens_single = structure_tokens[i]
 
-            # Apply mask if provided
             if attention_mask is not None:
-                sample_mask = attention_mask[i]  # (seq_len,)
-                # Only consider valid positions (not masked)
-                valid_positions = sample_mask.bool() & (tokens_single >= 0)
+                sample_mask = attention_mask[i].bool()
+                valid_positions = sample_mask & (tokens_single >= 0)
             else:
-                # Only consider non-padded positions (tokens >= 0)
                 valid_positions = tokens_single >= 0
 
-            # Get valid logits and tokens
-            valid_logits = logits_single[valid_positions]  # (valid_len, num_classes)
-            valid_tokens = tokens_single[valid_positions]  # (valid_len,)
+            valid_logits = logits_single[valid_positions]
+            valid_tokens = tokens_single[valid_positions]
 
-            # CRITICAL: Validate and remove invalid structural tokens to avoid corrupting the loss calculation
             invalid_mask = (valid_tokens >= self.num_structural_classes) | (valid_tokens < 0)
             if invalid_mask.any():
-                num_invalid = invalid_mask.sum().item()
-                print(f"Warning: Found {num_invalid} invalid structural tokens for sample {i}. Ignoring these positions.")
-                # Keep only valid tokens
                 valid_indices = ~invalid_mask
                 valid_logits = valid_logits[valid_indices]
                 valid_tokens = valid_tokens[valid_indices]
 
-            # Calculate cross-entropy loss for this sample if we have valid tokens
             if valid_logits.size(0) > 0:
-                sample_loss = F.cross_entropy(valid_logits, valid_tokens, reduction='mean', ignore_index=-100)
-                physical_loss_per_sample[i] = sample_loss
+                physical_loss_per_sample[i] = self.physical_loss_fn(valid_logits, valid_tokens)
 
-        # Overall physical loss is the average of per-sample losses
-        physical_loss = physical_loss_per_sample.mean() if physical_loss_per_sample.numel() > 0 else torch.tensor(0.0, device=pLM_embeddings.device)
-
+        physical_loss = physical_loss_per_sample.mean()
         return physical_loss, physical_loss_per_sample
 
-    def _calculate_physical_loss(self, pLM_embeddings, structure_tokens, attention_mask=None):
-        """
-        Calculate the physical-level loss for structural token prediction (original method)
-        """
-        batch_size, seq_len, hidden_dim = pLM_embeddings.shape
 
-        # Predict structural tokens
-        logits = self.structural_prediction_head(pLM_embeddings)  # (batch_size, seq_len, num_classes)
-
-        # Flatten for loss calculation
-        logits_flat = logits.view(-1, self.num_structural_classes)  # (batch_size * seq_len, num_classes)
-        tokens_flat = structure_tokens.view(-1)  # (batch_size * seq_len,)
-
-        # Debug: Print statistics about structural tokens
-        unique_tokens = torch.unique(tokens_flat[tokens_flat >= 0])  # Only non-padded tokens
-        print(f"Physical loss debug - Batch size: {batch_size}, Seq len: {seq_len}")
-        print(f"  Unique tokens (non-padded): {unique_tokens.tolist()}")
-        print(f"  Token range: [{tokens_flat[tokens_flat >= 0].min().item() if (tokens_flat >= 0).any() else 'N/A'}, "
-              f"{tokens_flat[tokens_flat >= 0].max().item() if (tokens_flat >= 0).any() else 'N/A'}]")
-        print(f"  Number of valid (non-padded) tokens: {(tokens_flat >= 0).sum().item()}")
-        print(f"  Number of padding tokens: {(tokens_flat == -100).sum().item()}")
-
-        # Show token distribution for first sample in batch if batch size is reasonable
-        if batch_size > 0:
-            first_sample_tokens = structure_tokens[0]
-            print(f"  First sample tokens (first 50): {first_sample_tokens[:min(50, len(first_sample_tokens))].tolist()}")
-            if attention_mask is not None:
-                print(f"  First sample attention mask (first 50): {attention_mask[0][:min(50, len(attention_mask[0]))].tolist()}")
-
-        # CRITICAL: Validate and remove invalid structural tokens to avoid corrupting the loss calculation
-        # This handles tokens generated with old buggy code that mapped unknown chars to a value outside of the class range
-        invalid_mask = (tokens_flat >= self.num_structural_classes) | (tokens_flat < 0)
-        if invalid_mask.any():
-            num_invalid = invalid_mask.sum().item()
-            print(f"Warning: Found {num_invalid} invalid structural tokens (>= {self.num_structural_classes} or < 0). Ignoring these positions.")
-            # Set invalid tokens to ignore_index so they don't contribute to the loss
-            tokens_flat = torch.where(invalid_mask, torch.tensor(-100, device=tokens_flat.device), tokens_flat)
-
-        # Apply attention mask by setting ignored positions to ignore_index
-        if attention_mask is not None:
-            mask_flat = attention_mask.view(-1)  # (batch_size * seq_len,)
-            tokens_flat = torch.where(mask_flat.bool(), tokens_flat, torch.tensor(-100, device=tokens_flat.device))
-
-        # Calculate cross-entropy loss
-        physical_loss = self.ce_loss(logits_flat, tokens_flat)
-
-        return physical_loss
+def visualize_confusion_matrix(true_tokens, pred_tokens, save_path="confusion_matrix.png"):
+    """
+    Visualizes the confusion matrix for structural token predictions.
+    """
+    import numpy as np
+    cm = confusion_matrix(true_tokens, pred_tokens, labels=np.arange(21))
+    plt.figure(figsize=(12, 10))
+    sns.heatmap(cm, annot=True, fmt='d', cmap='Blues')
+    plt.xlabel("Predicted")
+    plt.ylabel("True")
+    plt.title("Confusion Matrix for Structural Token Prediction")
+    plt.savefig(save_path)
+    print(f"Confusion matrix saved to {save_path}")
+    plt.close()
 
 
 class PretrainedGNNWrapper(nn.Module):
@@ -303,20 +272,17 @@ class PretrainedGNNWrapper(nn.Module):
     This module is frozen during training to provide structural embeddings
     Can load from local path or HuggingFace hub if available
     """
-    def __init__(self, model_path=None, hidden_dim=512, freeze=True):
+    def __init__(self, hidden_dim=512):
         """
         Args:
-            model_path: Path to pre-trained model (not currently available for GearNet)
             hidden_dim: Hidden dimension for the model
-            freeze: Whether to freeze the model parameters
         """
         super().__init__()
 
         from models.gearnet_model import create_pretrained_gearnet
         self.backbone = create_pretrained_gearnet(
             hidden_dim=hidden_dim,
-            pretrained_path=model_path,
-            freeze=freeze
+            freeze=True  # Always freeze for pre-computation
         )
         print("Successfully loaded GearNet implementation from TorchDrug")
 

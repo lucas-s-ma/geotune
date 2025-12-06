@@ -124,6 +124,39 @@ def evaluate_model(model, dataloader, geometric_constraints, device):
     }
 
 
+def calculate_perplexity(model, dataloader, device):
+    """Calculates perplexity on the evaluation data."""
+    model.eval()
+    total_loss = 0
+    total_tokens = 0
+    
+    with torch.no_grad():
+        for batch in tqdm(dataloader, desc="Calculating Perplexity"):
+            input_ids = batch['input_ids'].to(device)
+            attention_mask = batch['attention_mask'].to(device)
+            
+            # Shift labels for autoregressive loss calculation
+            labels = input_ids.clone()
+            
+            # Forward pass
+            outputs = model(input_ids=input_ids, attention_mask=attention_mask)
+            logits = model.lm_head(outputs['sequence_output'])
+            
+            # Calculate loss
+            loss_fct = nn.CrossEntropyLoss(ignore_index=-100)
+            loss = loss_fct(logits.view(-1, logits.size(-1)), labels.view(-1))
+            
+            # Accumulate loss and token count
+            total_loss += loss.item() * (labels != -100).sum().item()
+            total_tokens += (labels != -100).sum().item()
+            
+    # Calculate perplexity
+    avg_loss = total_loss / total_tokens
+    perplexity = torch.exp(torch.tensor(avg_loss)).item()
+    
+    return perplexity
+
+
 def main():
     args = parse_args()
     
@@ -131,22 +164,12 @@ def main():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
     
-    # Load model
+    # Load model with LoRA adapters
     print("Loading model...")
-    lora_params = {
-        'r': 8,  # Default LoRA params, adjust as needed
-        'lora_alpha': 16,
-        'target_modules': ["query", "key", "value", "dense", "intermediate.dense", "output.dense"]
-    }
-    model, tokenizer = load_esm_with_lora(args.model_name, lora_params)
-    
-    # Load LoRA adapters
-    # Note: You'd need to adapt this part based on how you saved the model
-    # This is a simplified version - actual loading would depend on your saving format
-    print(f"Loading LoRA adapters from {args.model_path}")
-    
-    # For now, we'll just move the model to device
-    # In a real scenario, you'd load the specific adapter weights
+    model, tokenizer = load_esm_with_lora(
+        model_name=args.model_name,
+        lora_weights_path=args.model_path
+    )
     model.to(device)
     
     # Initialize geometric constraints
@@ -170,17 +193,17 @@ def main():
     print("Starting evaluation...")
     results = evaluate_model(model, eval_loader, geometric_constraints, device)
     
+    # Calculate perplexity
+    perplexity = calculate_perplexity(model, eval_loader, device)
+    results['perplexity'] = perplexity
+    
     # Print results
     print("\nEvaluation Results:")
-    print(f"MLM Loss: {results['mlm_loss']:.4f}")
-    print(f"Constraint Loss: {results['constraint_loss']:.4f}")
-    print(f"Combined Loss: {results['combined_loss']:.4f}")
-    print(f"Distance Loss: {results['distance_loss']:.4f}")
-    print(f"Angle Loss: {results['angle_loss']:.4f}")
-    print(f"Neighborhood Loss: {results['neighborhood_loss']:.4f}")
+    for key, value in results.items():
+        print(f"{key.replace('_', ' ').title()}: {value:.4f}")
     
     # Save results
-    results_path = os.path.join(args.model_path, "evaluation_results.txt")
+    results_path = os.path.join(os.path.dirname(args.model_path), "evaluation_results.txt")
     with open(results_path, 'w') as f:
         f.write("Evaluation Results\n")
         f.write("=" * 20 + "\n")
@@ -188,6 +211,7 @@ def main():
             f.write(f"{key}: {value:.4f}\n")
     
     print(f"\nResults saved to {results_path}")
+
 
 
 if __name__ == "__main__":

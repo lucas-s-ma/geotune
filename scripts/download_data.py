@@ -13,82 +13,49 @@ project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root))
 
 
+from tqdm import tqdm
+
 def download_protein_data(pdb_ids, output_dir, include_chains=None):
     """
-    Download protein structure data from RCSB PDB
-    
-    Args:
-        pdb_ids: List of PDB IDs to download
-        output_dir: Output directory to save files2
-        include_chains: List of chain IDs to include (None for all chains)
+    Download protein structure data from RCSB PDB.
     """
     os.makedirs(output_dir, exist_ok=True)
-    
     pdbl = PDBList()
     
     success_count = 0
     fail_count = 0
     
-    for pdb_id in pdb_ids:
+    for pdb_id in tqdm(pdb_ids, desc="Downloading PDB files"):
         pdb_id = pdb_id.strip().upper()
-        print(f"Downloading {pdb_id}...")
-
-        # check if this is already in output_dir
-        if os.path.exists(os.path.join(output_dir, f"{pdb_id}.pdb")):
-            print(f"{pdb_id} already exists in {output_dir}, skipping download.")
+        
+        new_path = os.path.join(output_dir, f"{pdb_id}.pdb")
+        if os.path.exists(new_path):
             success_count += 1
             continue
-        
-        # check if this is already in output_dir
-        if os.path.exists(os.path.join(output_dir, f"{pdb_id}.pdb")):
-            print(f"{pdb_id} already exists in {output_dir}, skipping download.")
-            success_count += 1
-            continue
-        
-
 
         try:
-            # Check if the entry is a protein-only structure
             info_url = f"https://data.rcsb.org/rest/v1/core/entry/{pdb_id}"
             info_r = requests.get(info_url)
             if info_r.status_code == 200:
                 info_data = info_r.json()
                 entry_info = info_data.get("rcsb_entry_info", {})
-                
-                # Check if it's a protein structure
-                is_protein = entry_info.get("polymer_entity_count_protein", 0) > 0
-                has_dna = entry_info.get("polymer_entity_count_dna", 0) > 0
-                has_rna = entry_info.get("polymer_entity_count_rna", 0) > 0
-                
-                if not is_protein or has_dna or has_rna:
-                    print(f"Skipping {pdb_id}: Not a protein-only structure.")
+                if not entry_info.get("polymer_entity_count_protein", 0) > 0 or \
+                   entry_info.get("polymer_entity_count_dna", 0) > 0 or \
+                   entry_info.get("polymer_entity_count_rna", 0) > 0:
                     continue
             else:
-                print(f"Could not verify molecule type for {pdb_id}, skipping.")
                 continue
             
-            # Download the PDB file
-            pdb_filename = pdbl.retrieve_pdb_file(
-                pdb_id, 
-                pdir=output_dir, 
-                file_format='pdb',
-                overwrite=True
-            )
+            pdbl.retrieve_pdb_file(pdb_id, pdir=output_dir, file_format='pdb', overwrite=True)
             
-            # Rename to consistent format
             old_path = os.path.join(output_dir, f"pdb{pdb_id.lower()}.ent")
-            new_path = os.path.join(output_dir, f"{pdb_id}.pdb")
-            
             if os.path.exists(old_path):
                 os.rename(old_path, new_path)
-                print(f"Downloaded {pdb_id} to {new_path}")
                 success_count += 1
             else:
-                print(f"Failed to download {pdb_id}")
                 fail_count += 1
                 
         except Exception as e:
-            print(f"Error downloading {pdb_id}: {e}")
             fail_count += 1
     
     print(f"\nDownload completed! Success: {success_count}, Failed: {fail_count}")
@@ -144,43 +111,86 @@ def download_by_uniprot(uniprot_ids, output_dir):
             print(f"Error searching for UniProt {uniprot_id}: {e}")
 
 
+def validate_downloaded_files(output_dir):
+    """
+    Validates downloaded PDB files.
+    """
+    print(f"Validating files in {output_dir}...")
+    valid_count = 0
+    invalid_count = 0
+    parser = PDBParser(QUIET=True)
+    
+    for filename in os.listdir(output_dir):
+        if filename.endswith(".pdb"):
+            try:
+                parser.get_structure("protein", os.path.join(output_dir, filename))
+                valid_count += 1
+            except Exception as e:
+                invalid_count += 1
+    
+    print(f"Validation complete: {valid_count} valid, {invalid_count} invalid PDB files.")
+
+
 def main():
-    parser = argparse.ArgumentParser(description="Download protein structure data")
-    parser.add_argument("--output_dir", type=str, required=True, 
-                       help="Output directory to save PDB files")
-    parser.add_argument("--pdb_list", type=str, 
-                       help="Path to file containing PDB IDs (one per line)")
-    parser.add_argument("--uniprot_list", type=str,
-                       help="Path to file containing UniProt IDs (one per line)")
-    parser.add_argument("--example", action="store_true",
-                       help="Download example PDB structures")
+    parser = argparse.ArgumentParser(
+        description="Download and validate protein structure data from RCSB PDB."
+    )
+    parser.add_argument(
+        "--output_dir", 
+        type=str, 
+        required=True, 
+        help="Directory to save PDB files."
+    )
+    parser.add_argument(
+        "--pdb_list", 
+        type=str, 
+        help="Path to a file containing a list of PDB IDs to download."
+    )
+    parser.add_argument(
+        "--uniprot_list", 
+        type=str,
+        help="Path to a file containing a list of UniProt IDs to download."
+    )
+    parser.add_argument(
+        "--example", 
+        action="store_true",
+        help="Download a small set of example PDB structures."
+    )
+    parser.add_argument(
+        "--validate",
+        action="store_true",
+        help="Validate the downloaded PDB files."
+    )
     
     args = parser.parse_args()
     
     if args.example:
-        # Example PDB IDs that are known to be good protein structures
-        example_pdbs = [
-            "1TIM",  # Triosephosphate isomerase
-            "2V7V",  # Small protein
-            "3ZJE",  # Another small protein
-            "4GCR",  # Cytochrome C
-            "1BPI",  # Barnase
-        ]
-        print("Downloading example PDB structures...")
+        example_pdbs = ["1TIM", "2V7V", "3ZJE", "4GCR", "1BPI"]
         download_protein_data(example_pdbs, args.output_dir)
         
     elif args.pdb_list:
-        with open(args.pdb_list, 'r') as f:
-            pdb_ids = [line.strip() for line in f.readlines() if line.strip()]
-        download_protein_data(pdb_ids, args.output_dir)
+        try:
+            with open(args.pdb_list, 'r') as f:
+                pdb_ids = [line.strip() for line in f if line.strip()]
+            download_protein_data(pdb_ids, args.output_dir)
+        except FileNotFoundError:
+            print(f"Error: PDB list file not found at {args.pdb_list}")
+            exit(1)
         
     elif args.uniprot_list:
-        with open(args.uniprot_list, 'r') as f:
-            uniprot_ids = [line.strip() for line in f.readlines() if line.strip()]
-        download_by_uniprot(uniprot_ids, args.output_dir)
+        try:
+            with open(args.uniprot_list, 'r') as f:
+                uniprot_ids = [line.strip() for line in f if line.strip()]
+            download_by_uniprot(uniprot_ids, args.output_dir)
+        except FileNotFoundError:
+            print(f"Error: UniProt list file not found at {args.uniprot_list}")
+            exit(1)
         
     else:
-        print("Please specify either --pdb_list, --uniprot_list, or --example")
+        print("Please specify a source for PDB IDs (--pdb_list, --uniprot_list, or --example).")
+
+    if args.validate:
+        validate_downloaded_files(args.output_dir)
 
 
 if __name__ == "__main__":
