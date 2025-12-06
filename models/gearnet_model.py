@@ -173,6 +173,9 @@ class GearNetFromCoordinates(nn.Module):
         self.hidden_dim = hidden_dim
         self.freeze = freeze
 
+        # Import GearNet model from TorchDrug inside the initialization
+        from torchdrug.models.gearnet import GeometryAwareRelationalGraphNeuralNetwork
+
         # Create actual GearNet model with parameters that work across different TorchDrug versions
         # The exact API can vary depending on the version of TorchDrug you have installed
         gearnet_kwargs = {
@@ -280,6 +283,7 @@ class GearNetFromCoordinates(nn.Module):
             graph = data.Graph(
                 edge_list=edge_list_tensor,
                 num_node=seq_len,
+                num_relation=7,  # Important: Match the num_relation expected by GearNet
                 node_feature=node_pos  # Use CA coordinates as node features directly
             )
             graphs.append(graph)
