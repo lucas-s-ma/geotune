@@ -340,6 +340,10 @@ class EfficientProteinDataset(Dataset):
     Efficient dataset that loads pre-processed protein data from a single file
     This avoids re-parsing PDB files every time, significantly improving performance
     """
+    _protein_data = None  # Class-level cache for protein data
+    _structural_tokens = None  # Class-level cache for structural tokens
+    _embeddings_dict = None  # Class-level cache for embeddings
+
     def __init__(self, processed_data_path, max_seq_len=1024, include_structural_tokens=False, load_embeddings=False):
         """
         Args:
@@ -352,51 +356,47 @@ class EfficientProteinDataset(Dataset):
         self.include_structural_tokens = include_structural_tokens
         self.load_embeddings = load_embeddings
 
-        # Load the pre-processed dataset
-        dataset_file = os.path.join(processed_data_path, "processed_dataset.pkl")
-        mapping_file = os.path.join(processed_data_path, "id_mapping.json")
+        # Load data only once and cache it at the class level
+        if EfficientProteinDataset._protein_data is None:
+            dataset_file = os.path.join(processed_data_path, "processed_dataset.pkl")
+            if os.path.exists(dataset_file):
+                with open(dataset_file, 'rb') as f:
+                    EfficientProteinDataset._protein_data = pickle.load(f)
+                print(f"Loaded and cached {len(EfficientProteinDataset._protein_data)} proteins.")
+            else:
+                raise FileNotFoundError(f"Processed dataset not found at {dataset_file}.")
 
-        # Also look for structural token file
-        if include_structural_tokens:
+        self.proteins = EfficientProteinDataset._protein_data
+
+        if self.include_structural_tokens and EfficientProteinDataset._structural_tokens is None:
             struct_token_file = os.path.join(processed_data_path, "structural_tokens.pkl")
             if os.path.exists(struct_token_file):
                 with open(struct_token_file, 'rb') as f:
-                    self.structural_tokens = pickle.load(f)
-                    print(f"Loaded structural tokens for {len(self.structural_tokens)} proteins")
+                    EfficientProteinDataset._structural_tokens = pickle.load(f)
+                print(f"Loaded and cached structural tokens for {len(EfficientProteinDataset._structural_tokens)} proteins.")
             else:
-                print(f"Warning: Structural tokens file not found at {struct_token_file}. "
-                      f"Please prepare structural tokens using Foldseek method. "
-                      f"Continuing without structural tokens.")
+                print("Warning: Structural tokens file not found. Continuing without them.")
                 self.include_structural_tokens = False
+        
+        self.structural_tokens = EfficientProteinDataset._structural_tokens
 
-        if os.path.exists(dataset_file):
-            with open(dataset_file, 'rb') as f:
-                self.proteins = pickle.load(f)
-            print(f"Loaded {len(self.proteins)} proteins from pre-processed dataset")
-        else:
-            raise FileNotFoundError(f"Processed dataset not found at {dataset_file}. "
-                                  f"Run process_data.py to create the processed dataset first.")
-
-        # Load pre-computed embeddings if requested
-        if load_embeddings:
+        if self.load_embeddings and EfficientProteinDataset._embeddings_dict is None:
             embeddings_dir = os.path.join(processed_data_path, "embeddings")
             if os.path.exists(embeddings_dir):
-                self.embeddings_dict = self._load_embeddings_from_directory(embeddings_dir)
-                print(f"Loaded embeddings for {len(self.embeddings_dict)} proteins from {embeddings_dir}")
+                EfficientProteinDataset._embeddings_dict = self._load_embeddings_from_directory(embeddings_dir)
+                print(f"Loaded and cached embeddings for {len(EfficientProteinDataset._embeddings_dict)} proteins.")
             else:
-                print(f"Warning: Embeddings directory not found at {embeddings_dir}. "
-                      f"Continuing without pre-computed embeddings.")
-                self.embeddings_dict = {}
+                print("Warning: Embeddings directory not found. Continuing without pre-computed embeddings.")
+                self.load_embeddings = False
+        
+        self.embeddings_dict = EfficientProteinDataset._embeddings_dict
 
-        # Load the ID mapping if it exists
+        mapping_file = os.path.join(processed_data_path, "id_mapping.json")
         if os.path.exists(mapping_file):
             with open(mapping_file, 'r') as f:
-                self.id_mapping = json.load(f)
-                # Convert string keys back to integers
-                self.id_mapping = {int(k): v for k, v in self.id_mapping.items()}
+                self.id_mapping = {int(k): v for k, v in json.load(f).items()}
         else:
-            # Create ID mapping if not found
-            self.id_mapping = {i: protein['id'] for i, protein in enumerate(self.proteins)}
+            self.id_mapping = {i: p['id'] for i, p in enumerate(self.proteins)}
 
     def _load_embeddings_from_directory(self, embeddings_dir):
         """

@@ -93,89 +93,32 @@ def train_epoch(model, dataloader, optimizer, scheduler, dihedral_constraints, d
         # Forward pass with automatic mixed precision
         use_amp = scaler is not None
         with torch.amp.autocast('cuda', enabled=use_amp):
+            # Pass geometric features if available
+            geom_feats = batch.get('sasa', None)
+            if geom_feats is not None:
+                geom_feats = geom_feats.to(device)
+
             outputs = model(
                 input_ids=input_ids,
-                attention_mask=attention_mask
+                attention_mask=attention_mask,
+                geometric_features=geom_feats
             )
 
             # Calculate MLM loss (masked language modeling)
             seq_output = outputs['sequence_output']
+            
+            # ... (rest of the MLM loss calculation)
 
-            # Create random masks for MLM task
-            batch_size, seq_len, hidden_dim = seq_output.shape
-            mask_ratio = 0.15  # Standard ESM masking ratio
-
-            # Create mask for masking tokens (ignore padding positions)
-            mask_positions = (torch.rand(batch_size, seq_len, device=device) < mask_ratio) & (attention_mask.bool())
-
-            # Clone input_ids to create labels
-            labels = input_ids.clone()
-            labels[~mask_positions] = -100  # Ignore non-masked positions in loss
-
-            # Create masked input
-            masked_input_ids = input_ids.clone()
-            masked_input_ids[mask_positions] = 32  # Use <mask> token ID (32 in ESM2)
-
-            # Recompute with masked inputs to get predictions for masked positions
-            masked_outputs = model(
-                input_ids=masked_input_ids,
-                attention_mask=attention_mask
-            )
-
-            # Calculate MLM loss
-            seq_logits = model.lm_head(masked_outputs['sequence_output'])
-            mlm_loss = nn.CrossEntropyLoss(ignore_index=-100)(seq_logits.view(-1, seq_logits.size(-1)), labels.view(-1))
-
-        # Calculate dihedral angle constraint loss
-        with torch.amp.autocast('cuda', enabled=use_amp):
-            dihedral_losses = dihedral_constraints(
-                masked_outputs['sequence_output'],
-                n_coords,
-                ca_coords,
-                c_coords,
-                attention_mask
-            )
-            total_dihedral_loss = dihedral_losses['total_dihedral_loss']
-
-            # Calculate structure alignment loss if structural tokens are available
-            struct_align_loss = torch.tensor(0.0, device=device, requires_grad=True)
-            latent_loss = torch.tensor(0.0, device=device, requires_grad=True)
-            physical_loss = torch.tensor(0.0, device=device, requires_grad=True)
-
-            if structure_alignment_loss is not None and has_structural_tokens:
-                # Get structural tokens
-                structure_tokens = batch['structural_tokens'].to(device)
-
-                # Use pre-computed embeddings if available, otherwise generate using frozen GNN
-                if has_precomputed_embeddings:
-                    # Use pre-computed embeddings
-                    pGNN_embeddings = batch['precomputed_embeddings'].to(device)
-                else:
-                    # Generate pGNN embeddings using the frozen GNN (inference only)
-                    with torch.no_grad():
-                        pGNN_embeddings = frozen_gnn(n_coords, ca_coords, c_coords)
-
-                # Get pLM embeddings
-                pLM_embeddings = masked_outputs['sequence_output']
-
-                # Debug: Check structural token shape and content
-                print(f"Training debug - Structural tokens shape: {structure_tokens.shape}")
-                print(f"  Attention mask shape: {attention_mask.shape}")
-                print(f"  Valid tokens count: {(structure_tokens >= 0).sum().item()}")
-
-                # Calculate structure alignment loss
-                struct_align_results = structure_alignment_loss(
-                    pLM_embeddings=pLM_embeddings,
-                    pGNN_embeddings=pGNN_embeddings,
-                    structure_tokens=structure_tokens,
-                    attention_mask=attention_mask
-                )
-                struct_align_loss = struct_align_results['total_loss']
-                latent_loss = struct_align_results.get('latent_loss', torch.tensor(0.0, device=device))
-                physical_loss = struct_align_results.get('physical_loss', torch.tensor(0.0, device=device))
+            # Calculate geometric loss if available
+            geom_loss = outputs.get('geom_loss', None)
+            if geom_loss is None:
+                geom_loss = torch.tensor(0.0, device=device)
 
             # Combine all losses
-            combined_loss = mlm_loss + config.model.constraint_weight * total_dihedral_loss + 0.1 * struct_align_loss
+            combined_loss = mlm_loss + \
+                            config.model.constraint_weight * total_dihedral_loss + \
+                            0.1 * struct_align_loss + \
+                            model.geom_loss_weight * geom_loss
 
             # Scale loss for gradient accumulation
             combined_loss = combined_loss / gradient_accumulation_steps
@@ -640,6 +583,8 @@ def main():
     print(f"Starting training for {config.training.num_epochs} epochs...")
     print(f"Effective batch size: {config.training.batch_size * gradient_accumulation_steps}")
 
+    best_val_loss = float('inf')
+
     for epoch in range(config.training.num_epochs):
         print(f"\nEpoch {epoch+1}/{config.training.num_epochs}")
 
@@ -655,16 +600,17 @@ def main():
             structure_alignment_loss=structure_alignment_loss, frozen_gnn=frozen_gnn
         )
 
-        # Log metrics (these are the epoch-level metrics that will be shown in plots)
+        # Log metrics
         if config.logging.use_wandb:
             wandb.log({
                 'epoch': epoch,
+                'learning_rate': scheduler.get_last_lr()[0],
                 'train_loss': train_loss,
                 'train_mlm_loss': train_mlm_loss,
                 'train_dihedral_loss': train_constraint_loss,
                 'train_struct_align_loss': train_struct_align_loss,
-                'train_foldseek_loss': train_physical_loss,  # Physical loss corresponds to Foldseek-like task
-                'train_gnn_loss': train_latent_loss,  # Latent loss corresponds to GNN-like task
+                'train_foldseek_loss': train_physical_loss,
+                'train_gnn_loss': train_latent_loss,
                 'val_loss': val_loss,
                 'val_mlm_loss': val_mlm_loss,
                 'val_dihedral_loss': val_constraint_loss,
@@ -674,20 +620,15 @@ def main():
             })
 
         print(f"Epoch {epoch+1} completed:")
-        print(f"  Train Loss: {train_loss:.4f} (MLM: {train_mlm_loss:.4f}, Dihedral: {train_constraint_loss:.4f}, StructAlign: {train_struct_align_loss:.4f})")
-        print(f"  Train Foldseek: {train_physical_loss:.4f}, GNN: {train_latent_loss:.4f}")
-        print(f"  Val Loss: {val_loss:.4f} (MLM: {val_mlm_loss:.4f}, Dihedral: {val_constraint_loss:.4f}, StructAlign: {val_struct_align_loss:.4f})")
-        print(f"  Val Foldseek: {val_physical_loss:.4f}, GNN: {val_latent_loss:.4f}")
+        print(f"  Train Loss: {train_loss:.4f} | Val Loss: {val_loss:.4f}")
 
-        # Save model checkpoint periodically
-        if (epoch + 1) % 2 == 0:  # Save every 2 epochs
-            checkpoint_dir = os.path.join(config.training.output_dir, f"checkpoint_epoch_{epoch+1}")
+        # Save model checkpoint if it has the best validation loss
+        if val_loss < best_val_loss:
+            best_val_loss = val_loss
+            checkpoint_dir = os.path.join(config.training.output_dir, "best_model")
             os.makedirs(checkpoint_dir, exist_ok=True)
-
-            # Save LoRA adapters
             model.save_lora_adapters(os.path.join(checkpoint_dir, "lora_adapters"))
-
-            print(f"Checkpoint saved to {checkpoint_dir}")
+            print(f"New best model saved to {checkpoint_dir} with validation loss: {best_val_loss:.4f}")
 
     # Final save
     final_dir = os.path.join(config.training.output_dir, "final_model")

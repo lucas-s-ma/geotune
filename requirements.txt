@@ -14,3 +14,6 @@ tqdm>=4.62.0
 typing-extensions>=4.0.0
 requests>=2.25.0
 fair-esm
+matplotlib>=3.5.0
+scikit-learn>=1.0.0
+seaborn>=0.11.0

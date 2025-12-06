@@ -67,7 +67,13 @@ class GearNet(nn.Module, core.Configurable):
             self.activation = nn.ReLU()  # default
 
         # Import GearNet layer inside the initialization to avoid ESM import issues
-        from torchdrug.models.gearnet import GeometryAwareRelationalGraphNeuralNetwork
+        try:
+            from torchdrug.models.gearnet import GeometryAwareRelationalGraphNeuralNetwork
+            self.using_torchdrug_gearnet = True
+        except ImportError:
+            print("TorchDrug not available. GearNet will not work.")
+            self.using_torchdrug_gearnet = False
+            return
 
         # Initial embedding layer
         self.input_linear = nn.Linear(input_dim, hidden_dims[0])
@@ -121,6 +127,9 @@ class GearNet(nn.Module, core.Configurable):
         Returns:
             dict: Output containing node embeddings and graph embeddings
         """
+        if not self.using_torchdrug_gearnet:
+            raise ImportError("TorchDrug not available. GearNet cannot run.")
+
         # Initialize node features
         hiddens = []
         layer_input = self.input_linear(input)
@@ -174,7 +183,13 @@ class GearNetFromCoordinates(nn.Module):
         self.freeze = freeze
 
         # Import GearNet model from TorchDrug inside the initialization
-        from torchdrug.models.gearnet import GeometryAwareRelationalGraphNeuralNetwork
+        try:
+            from torchdrug.models.gearnet import GeometryAwareRelationalGraphNeuralNetwork
+            self.using_torchdrug_gearnet = True
+        except ImportError:
+            print("TorchDrug not available. GearNet cannot be created.")
+            self.using_torchdrug_gearnet = False
+            return
 
         # Create actual GearNet model with parameters that work across different TorchDrug versions
         # The exact API can vary depending on the version of TorchDrug you have installed
@@ -184,7 +199,10 @@ class GearNetFromCoordinates(nn.Module):
             'num_relation': 7,
             'batch_norm': True,
             'short_cut': True,
-            'concat_hidden': False
+            'concat_hidden': False,
+            'num_mlp_layer': 2,
+            'activation': F.relu,
+            'dropout': 0.1
         }
 
         # Attempt to create the model, handling different API versions
@@ -220,116 +238,111 @@ class GearNetFromCoordinates(nn.Module):
 
     def forward(self, n_coords, ca_coords, c_coords):
         """
-        Forward pass taking N, CA, C coordinates and returning embeddings
-
-        Args:
-            n_coords: (batch_size, seq_len, 3) N atom coordinates
-            ca_coords: (batch_size, seq_len, 3) CA atom coordinates
-            c_coords: (batch_size, seq_len, 3) C atom coordinates
-
-        Returns:
-            embeddings: (batch_size, seq_len, hidden_dim) structural embeddings
+        Forward pass taking N, CA, C coordinates and returning embeddings.
+        This implementation uses a vectorized and GPU-friendly graph construction.
         """
+        if not self.using_torchdrug_gearnet:
+            raise ImportError("TorchDrug not available. GearNet cannot run.")
+
         is_half = ca_coords.dtype == torch.half
         device = ca_coords.device
 
-        # When using mixed precision, cast coords to float32 to avoid errors in graph construction
         if is_half:
-            n_coords = n_coords.float()
             ca_coords = ca_coords.float()
-            c_coords = c_coords.float()
 
         batch_size, seq_len, _ = ca_coords.shape
 
-        graphs = []
-        for b in range(batch_size):
-            node_pos = ca_coords[b] # (seq_len, 3)
+        # Stack N, CA, C coordinates to create features
+        # In the actual GearNet, these would be used to compute geometric features
+        # For now, we'll use CA coordinates as simple node features
+        node_features = ca_coords.view(-1, 3)  # (batch_size * seq_len, 3)
 
-            # Create geometric graph edges
-            edge_list = []
-            for i in range(seq_len):
-                # Sequential edges (within ±3 residues)
-                for offset in [-3, -2, -1, 1, 2, 3]:
-                    j = i + offset
-                    if 0 <= j < seq_len:
-                        # Relations 0-5 for sequential neighbors
-                        relation_type = 0 if offset < 0 else 1  # Use simpler relation types
-                        edge_list.append([i, j, relation_type])
+        # Vectorized sequential edges - these are based on sequence adjacency
+        arange = torch.arange(seq_len, device=device)
+        seq_edges = []
+        for offset in [-3, -2, -1, 1, 2, 3]:
+            src = arange
+            dst = arange + offset
+            mask = (dst >= 0) & (dst < seq_len)
+            if mask.any():
+                seq_edges.append(torch.stack([src[mask], dst[mask]], dim=1))
 
-            # Spatial edges (k-NN based on 3D distance)
-            if seq_len > 1:
-                dist_matrix = torch.norm(node_pos.unsqueeze(1) - node_pos.unsqueeze(0), dim=2)
-                k = min(10, seq_len - 1)  # Ensure k is not larger than sequence
-                if k > 0:
-                    _, topk_indices = torch.topk(dist_matrix, k + 1, largest=False)
+        if seq_edges:
+            seq_edge_list = torch.cat(seq_edges, dim=0)
+            seq_relation_type = torch.zeros(len(seq_edge_list), 1, dtype=torch.long, device=device)
+        else:
+            # If no sequence edges, we still need at least one edge for the graph
+            seq_edge_list = torch.zeros((1, 2), dtype=torch.long, device=device)
+            seq_relation_type = torch.zeros((1, 1), dtype=torch.long, device=device)
 
-                    for i in range(seq_len):
-                        # Get k nearest neighbors (excluding self)
-                        nearest_neighbors = topk_indices[i, 1:k+1]
-                        for j in nearest_neighbors:
-                            # Relation type 2 for spatial neighbors
-                            edge_list.append([i, int(j.item()), 2])
+        # Vectorized k-NN spatial edges - these are based on 3D proximity
+        dist_matrix = torch.cdist(ca_coords, ca_coords)
+        k = min(10, seq_len - 1)
+        if k > 0:
+            topk_dists, topk_indices = torch.topk(dist_matrix, k + 1, largest=False)
 
-            if edge_list:
-                edge_list_tensor = torch.tensor(edge_list, dtype=torch.long, device=device)
+            src = torch.arange(seq_len, device=device).view(-1, 1).expand(-1, k)
+            dst = topk_indices[:, :, 1:].flatten()
+            src = src.flatten()
+            mask = (dst >= 0) & (dst < seq_len)
+            src = src[mask]
+            dst = dst[mask]
+
+            if len(src) > 0:
+                spatial_edge_list = torch.stack([src, dst], dim=1)
+                spatial_relation_type = torch.ones(len(spatial_edge_list), 1, dtype=torch.long, device=device) * 2
+
+                edge_list = torch.cat([seq_edge_list, spatial_edge_list], dim=0)
+                relation_type = torch.cat([seq_relation_type, spatial_relation_type], dim=0)
             else:
-                # If no edges (very short sequence), create self loops to avoid empty graph
-                edge_list_tensor = torch.stack([
-                    torch.arange(seq_len, device=device),
-                    torch.arange(seq_len, device=device),
-                    torch.zeros(seq_len, dtype=torch.long, device=device)  # relation type 0
-                ], dim=1)
+                edge_list = seq_edge_list
+                relation_type = seq_relation_type
+        else:
+            edge_list = seq_edge_list
+            relation_type = seq_relation_type
 
+        # Create a batch of graphs
+        graphs = []
+        for i in range(batch_size):
             graph = data.Graph(
-                edge_list=edge_list_tensor,
+                edge_list=torch.cat([edge_list, relation_type], dim=1),
                 num_node=seq_len,
-                num_relation=7,  # Important: Match the num_relation expected by GearNet
-                node_feature=node_pos  # Use CA coordinates as node features directly
+                num_relation=7
             )
             graphs.append(graph)
 
-        # Batch the graphs
-        if len(graphs) > 1:
-            batched_graph = data.graph_collate(graphs)
-        else:
-            batched_graph = graphs[0]
+        # Batch the graphs together
+        batched_graph = data.graph_collate(graphs).to(device)
 
-        # Ensure the batched graph is on the correct device
-        batched_graph = batched_graph.to(device)
+        # Set node features for the entire batch
+        batched_graph.node_feature = node_features
 
-        # Pass through GearNet model in float32 mode
-        with torch.cuda.amp.autocast(enabled=False):  # Disable autocast for this forward pass
+        # Forward pass through the actual GearNet model
+        with torch.cuda.amp.autocast(enabled=False):
             output = self.gearnet_model(batched_graph, batched_graph.node_feature)
 
-        # output["node_feature"] is (total_num_residues, hidden_dim)
-        node_embeddings = output["node_feature"]
+        # Extract node embeddings and reshape to (batch_size, seq_len, hidden_dim)
+        node_embeddings = output.get("node_feature", output)
+        if isinstance(node_embeddings, dict):
+            node_embeddings = node_embeddings.get("node_feature", node_embeddings.get("graph_feature"))
 
-        # The output should have the right size for reshaping
-        expected_nodes = batch_size * seq_len
-
-        if node_embeddings.size(0) != expected_nodes:
-            raise RuntimeError(
-                f"GearNet output size mismatch: got {node_embeddings.size(0)}, "
-                f"expected {expected_nodes} (batch_size={batch_size}, seq_len={seq_len})"
-            )
-
-        # Reshape to expected format: (batch_size, seq_len, hidden_dim)
+        # Reshape back to batch format
         final_embeddings = node_embeddings.view(batch_size, seq_len, self.hidden_dim)
 
-        # If the original input was half, convert the output back to half
         if is_half:
-            final_embeddings = final_embeddings.to(dtype=ca_coords.dtype)
+            final_embeddings = final_embeddings.half()
 
         return final_embeddings
 
 
-def create_pretrained_gearnet(hidden_dim=512, pretrained_path=None, freeze=True):
+def create_pretrained_gearnet(hidden_dim=512, freeze=True):
     """
-    Factory function to create a pre-trained GearNet model
+    Factory function to create a pre-trained GearNet model.
+    Note: This implementation uses a randomly initialized GearNet model.
+    Loading pre-trained weights is not currently supported in this script.
 
     Args:
         hidden_dim: Hidden dimension for the model
-        pretrained_path: Path to pre-trained weights (if available)
         freeze: Whether to freeze the model during training
 
     Returns:
@@ -337,18 +350,45 @@ def create_pretrained_gearnet(hidden_dim=512, pretrained_path=None, freeze=True)
     """
     model = GearNetFromCoordinates(
         hidden_dim=hidden_dim,
-        pretrained_path=pretrained_path,
         freeze=freeze
     )
 
-    if pretrained_path:
-        # Load pre-trained weights if provided
-        try:
-            state_dict = torch.load(pretrained_path, map_location='cpu')
-            model.load_state_dict(state_dict)
-            print(f"Loaded pre-trained GearNet weights from {pretrained_path}")
-        except Exception as e:
-            print(f"Could not load pre-trained weights from {pretrained_path}: {e}")
-            print("Using randomly initialized GearNet")
+    if not model.using_torchdrug_gearnet:
+        raise ImportError("TorchDrug is required but not available. Please install torchdrug: pip install torchdrug")
+
+    print("Using randomly initialized GearNet. Pre-trained weights are not loaded.")
 
     return model
+
+import networkx as nx
+import matplotlib.pyplot as plt
+
+def visualize_graph(graph, save_path="graph.png"):
+    """
+    Visualizes a torchdrug.data.Graph object.
+    """
+    edge_list = graph.edge_list.cpu().numpy()
+
+    # Create a networkx graph
+    G = nx.Graph()
+    for i in range(graph.num_node):
+        G.add_node(i)
+
+    for i in range(graph.num_edge):
+        u, v, rel = edge_list[i]
+        G.add_edge(u, v, relation=rel)
+
+    # Draw the graph
+    plt.figure(figsize=(12, 12))
+    pos = nx.spring_layout(G)
+
+    edge_colors = [d['relation'] for u, v, d in G.edges(data=True)]
+
+    nx.draw(G, pos, with_labels=True, node_color='lightblue',
+            edge_color=edge_colors, cmap=plt.cm.get_cmap('viridis'),
+            node_size=500, font_size=10)
+
+    plt.title("Graph Structure")
+    plt.savefig(save_path)
+    print(f"Graph visualization saved to {save_path}")
+    plt.close()

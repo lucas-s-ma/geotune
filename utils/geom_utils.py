@@ -48,71 +48,50 @@ class GeometricConstraints(nn.Module):
 
     def distance_constraint_loss(self, sequence_embeddings, geometric_coords, attention_mask=None):
         """
-        Constraint based on preserving inter-residue distances in 3D space
-        Optimized to handle long sequences more efficiently by subsampling if needed
+        Constraint based on preserving inter-residue distances in 3D space.
+        Uses Smooth L1 Loss for robustness.
         """
         batch_size, seq_len, hidden_dim = sequence_embeddings.shape
         
-        # For very long sequences, subsample to reduce computational load
-        if seq_len > 100:  # If sequence is longer than 100 residues
-            # Randomly sample up to 100 positions to reduce N^2 complexity
-            max_sampled = 100
-            sample_size = min(max_sampled, seq_len)
+        # Subsample for efficiency with long sequences
+        if seq_len > 128:
+            sample_size = 128
+            sampled_indices = torch.randperm(seq_len, device=sequence_embeddings.device)[:sample_size].sort().values
             
-            # Randomly select indices to sample
-            sampled_indices = torch.multinomial(
-                torch.ones(seq_len, device=sequence_embeddings.device), 
-                sample_size, 
-                replacement=False
-            ).sort().values  # Sort to maintain order
-            
-            # Sample embeddings and coordinates
             sampled_embeddings = sequence_embeddings[:, sampled_indices, :]
             sampled_coords = geometric_coords[:, sampled_indices, :]
             
-            # Compute 3D distance matrix on subsampled data
-            coords_expanded = sampled_coords.unsqueeze(2)  # (B, S, 1, 3)
-            coords_transposed = sampled_coords.unsqueeze(1)  # (B, 1, S, 3)
-            true_distances = torch.norm(coords_expanded - coords_transposed, dim=-1)  # (B, S, S)
-            
-            # Compute embedding similarity matrix on subsampled data
-            normalized_embeddings = F.normalize(sampled_embeddings, p=2, dim=-1)  # (B, S, H)
-            embedding_similarities = torch.matmul(normalized_embeddings, normalized_embeddings.transpose(-2, -1))  # (B, S, S)
-            embedding_distances = 1 - embedding_similarities  # (B, S, S)
-            
-            # Handle attention mask if present (sample the mask too)
             if attention_mask is not None:
-                sampled_mask = attention_mask[:, sampled_indices]  # (B, S)
-                mask = sampled_mask.unsqueeze(1) * sampled_mask.unsqueeze(2)  # (B, S, S)
-                valid_pairs = mask.float()
+                sampled_mask = attention_mask[:, sampled_indices]
             else:
-                valid_pairs = torch.ones(batch_size, sample_size, sample_size, device=sequence_embeddings.device)
+                sampled_mask = torch.ones(batch_size, sample_size, device=sequence_embeddings.device)
         else:
-            # For shorter sequences, use the full calculation
-            # Compute 3D distance matrix
-            coords_expanded = geometric_coords.unsqueeze(2)  # (B, L, 1, 3)
-            coords_transposed = geometric_coords.unsqueeze(1)  # (B, 1, L, 3)
-            true_distances = torch.norm(coords_expanded - coords_transposed, dim=-1)  # (B, L, L)
-            
-            # Compute embedding similarity matrix (negative cosine similarity as distance proxy)
-            normalized_embeddings = F.normalize(sequence_embeddings, p=2, dim=-1)  # (B, L, H)
-            embedding_similarities = torch.matmul(normalized_embeddings, normalized_embeddings.transpose(-2, -1))  # (B, L, L)
-            embedding_distances = 1 - embedding_similarities  # (B, L, L)
-            
-            # Only consider valid residues (mask padding)
-            if attention_mask is not None:
-                mask = attention_mask.unsqueeze(1) * attention_mask.unsqueeze(2)  # (B, 1, L) * (B, L, 1) -> (B, L, L)
-                valid_pairs = mask.float()
-            else:
-                valid_pairs = torch.ones(batch_size, seq_len, seq_len, device=sequence_embeddings.device)
+            sampled_embeddings = sequence_embeddings
+            sampled_coords = geometric_coords
+            sampled_mask = attention_mask if attention_mask is not None else torch.ones(batch_size, seq_len, device=sequence_embeddings.device)
+
+        # Compute distance matrices
+        true_distances = torch.cdist(sampled_coords, sampled_coords, p=2)
         
-        # Apply distance threshold to identify spatial neighbors
+        normalized_embeddings = F.normalize(sampled_embeddings, p=2, dim=-1)
+        embedding_distances = 1 - torch.matmul(normalized_embeddings, normalized_embeddings.transpose(-2, -1))
+
+        # Create mask for valid pairs
+        mask = sampled_mask.unsqueeze(1) * sampled_mask.unsqueeze(2)
+        
+        # Identify spatial neighbors
         spatial_neighbors = (true_distances < self.dist_threshold).float()
-        valid_spatial_pairs = valid_pairs * spatial_neighbors
+        valid_spatial_pairs = mask * spatial_neighbors
         
-        # Compute loss between embedding distances and true distances for spatial neighbors
-        distance_diff = torch.abs(embedding_distances - true_distances / self.dist_threshold)
-        constraint_loss = torch.sum(distance_diff * valid_spatial_pairs) / (torch.sum(valid_spatial_pairs) + 1e-8)
+        # Normalize true distances for the loss
+        normalized_true_distances = true_distances / self.dist_threshold
+        
+        # Use Smooth L1 Loss
+        loss_fn = nn.SmoothL1Loss(reduction='none')
+        distance_diff = loss_fn(embedding_distances, normalized_true_distances)
+        
+        # Apply mask and compute final loss
+        constraint_loss = (distance_diff * valid_spatial_pairs).sum() / (valid_spatial_pairs.sum() + 1e-8)
         
         return constraint_loss
 
@@ -255,6 +234,34 @@ class GeometricConstraints(nn.Module):
             constraint_loss = torch.mean(neighbor_diff)
         
         return constraint_loss
+
+import matplotlib.pyplot as plt
+
+def visualize_distance_violations(true_distances, embedding_distances, spatial_neighbors_mask, save_path="distance_violations.png"):
+    """
+    Visualizes the relationship between true and embedding distances for spatial neighbors.
+    """
+    # Flatten and filter data for plotting
+    true_dist_flat = true_distances[spatial_neighbors_mask].detach().cpu().numpy()
+    embed_dist_flat = embedding_distances[spatial_neighbors_mask].detach().cpu().numpy()
+    
+    plt.figure(figsize=(10, 8))
+    plt.scatter(true_dist_flat, embed_dist_flat, alpha=0.3, label="Spatial Neighbors")
+    
+    # Highlight violations (e.g., where embedding distance is high for close true distances)
+    violations = (embed_dist_flat > 0.5) & (true_dist_flat < 10)
+    plt.scatter(true_dist_flat[violations], embed_dist_flat[violations], color='r', alpha=0.5, label="Violations")
+    
+    plt.xlabel("True Distance (Angstroms)")
+    plt.ylabel("Embedding Distance (1 - Cosine Similarity)")
+    plt.title("True vs. Embedding Distance for Spatial Neighbors")
+    plt.legend()
+    plt.grid(True)
+    
+    # Save the plot
+    plt.savefig(save_path)
+    print(f"Distance violation plot saved to {save_path}")
+    plt.close()
 
 
 class DistanceConstraint(nn.Module):

@@ -37,6 +37,16 @@ data:
   data_path: "data/processed"   # Path to processed data files
   num_workers: 2          # Number of data loading workers
 
+# Data pipeline configuration
+data_pipeline:
+  embedding_dim: 512      # Dimension of GearNet embeddings
+  foldseek_db_path: "data/foldseek_db" # Path to Foldseek database
+
+# Evaluation configuration
+evaluation:
+  eval_data_path: "data/processed_test" # Path to evaluation data
+  eval_batch_size: 8      # Batch size for evaluation
+
 # Logging configuration
 logging:
   use_wandb: true         # Whether to use Weights & Biases

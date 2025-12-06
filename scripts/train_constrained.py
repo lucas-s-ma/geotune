@@ -107,8 +107,11 @@ def train_epoch(model, dataloader, optimizer, scheduler, lagrangian_module, dihe
             per_sample_foldseek_losses = torch.zeros(batch_size, device=device)
             if alignment_module is not None and 'structural_tokens' in batch:
                 structure_tokens = batch['structural_tokens'].to(device)
-                with torch.no_grad():
-                    pGNN_embeddings = gnn_module(n_coords, ca_coords, c_coords)
+                if 'precomputed_embeddings' in batch:
+                    pGNN_embeddings = batch['precomputed_embeddings'].to(device)
+                else:
+                    with torch.no_grad():
+                        pGNN_embeddings = gnn_module(n_coords, ca_coords, c_coords)
                 
                 struct_align_results = alignment_module(pLM_embeddings, pGNN_embeddings, structure_tokens, attention_mask)
                 per_sample_gnn_losses = struct_align_results.get('latent_loss_per_sample', per_sample_gnn_losses)
@@ -207,7 +210,10 @@ def validate(model, dataloader, dihedral_module, alignment_module, gnn_module, d
             # Structure Alignment Losses
             if alignment_module is not None and 'structural_tokens' in batch:
                 structure_tokens = batch['structural_tokens'].to(device)
-                pGNN_embeddings = gnn_module(n_coords, ca_coords, c_coords)
+                if 'precomputed_embeddings' in batch:
+                    pGNN_embeddings = batch['precomputed_embeddings'].to(device)
+                else:
+                    pGNN_embeddings = gnn_module(n_coords, ca_coords, c_coords)
                 struct_align_results = alignment_module(pLM_embeddings, pGNN_embeddings, structure_tokens, attention_mask)
                 total_gnn_loss += struct_align_results['latent_loss'].item()
                 total_foldseek_loss += struct_align_results['physical_loss'].item()
@@ -263,7 +269,25 @@ def main():
     gnn_module = PretrainedGNNWrapper(hidden_dim=esm_hidden_size).to(device).eval()
 
     # --- Data ---
-    full_dataset = EfficientProteinDataset(config.data.data_path, max_seq_len=config.training.max_seq_len, include_structural_tokens=True)
+    esm_hidden_size = model.config.hidden_size
+    # Check for pre-computed embeddings
+    embeddings_path = os.path.join(config.data.data_path, "embeddings")
+    load_embeddings = False
+    if os.path.exists(embeddings_path):
+        sample_files = [f for f in os.listdir(embeddings_path) if f.endswith('_gearnet_embeddings.pkl')]
+        if sample_files:
+            try:
+                with open(os.path.join(embeddings_path, sample_files[0]), 'rb') as f:
+                    sample_data = pickle.load(f)
+                    if sample_data['embeddings'].shape[-1] == esm_hidden_size:
+                        load_embeddings = True
+                        print(f"Pre-computed embeddings found with correct dimension ({esm_hidden_size}).")
+                    else:
+                        print(f"Pre-computed embeddings have incorrect dimension, expected {esm_hidden_size}. Will generate on-the-fly.")
+            except Exception as e:
+                print(f"Could not validate pre-computed embeddings: {e}. Will generate on-the-fly.")
+    
+    full_dataset = EfficientProteinDataset(config.data.data_path, max_seq_len=config.training.max_seq_len, include_structural_tokens=True, load_embeddings=load_embeddings)
     train_size = int(0.8 * len(full_dataset))
     val_size = len(full_dataset) - train_size
     train_dataset, val_dataset = torch.utils.data.random_split(full_dataset, [train_size, val_size], generator=torch.Generator().manual_seed(config.training.seed))

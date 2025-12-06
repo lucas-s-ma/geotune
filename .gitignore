@@ -1,9 +1,25 @@
-checkpoint/
+# IDE and OS files
+.vscode/
+.DS_Store
+*.pyc
+*.prof
+
+# Data files
+data/pdb/
+data/processed/
+data/pdb_bk/
+data/processed_bk/
+
+# Output files
 outputs/
-__pycache__/
+checkpoint/
 wandb/
-data/pdb
-data/processed
-data/pdb_bk
-data/processed_bk
 foldseek/
+token_distribution.png
+confusion_matrix.png
+distance_violations.png
+dihedral_distribution.png
+
+# Jupyter notebooks
+notebooks/
+.ipynb_checkpoints/

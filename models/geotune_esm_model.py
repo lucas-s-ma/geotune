@@ -10,7 +10,7 @@ import logging
 logger = logging.getLogger(__name__)
 
 
-class ESMWithConstraints(nn.Module):
+class GeoTuneESMModel(nn.Module):
     """
     ESM2 model with integrated geometric constraint capabilities
     """
@@ -25,13 +25,13 @@ class ESMWithConstraints(nn.Module):
 
         self.config = config
 
-        # Apply LoRA FIRST, then add our custom layers
-        if lora_config is not None:
+        # If LoRA is not already applied, apply it now
+        if lora_config is not None and not isinstance(base_model, PeftModel):
             self.model = get_peft_model(base_model, lora_config)
             logger.info(f"Applied LoRA with config: {lora_config}")
         else:
             self.model = base_model
-
+        
         # Add language modeling head for MLM task
         hidden_size = self.config.hidden_size
         self.lm_head = nn.Linear(hidden_size, self.config.vocab_size, bias=False)
@@ -125,38 +125,16 @@ class ESMWithConstraints(nn.Module):
         return outputs['sequence_output']
 
     def save_lora_adapters(self, save_path):
-        if hasattr(self.model, 'save_pretrained'):
-            # Convert OmegaConf objects in PEFT config to regular Python types to avoid JSON serialization issues
-            from omegaconf import ListConfig, DictConfig, OmegaConf
-            import copy
-            
-            # Get the peft config from the model and make a copy
-            peft_config = self.model.peft_config
-            if peft_config:
-                # Convert any ListConfig or DictConfig objects to regular Python objects
-                for adapter_name, config in peft_config.items():
-                    if hasattr(config, '__dict__'):
-                        # Look through the config object's attributes
-                        for attr_name in dir(config):
-                            if attr_name.startswith('_'):
-                                continue  # Skip private attributes
-                            
-                            attr_value = getattr(config, attr_name)
-                            if isinstance(attr_value, ListConfig):
-                                setattr(config, attr_name, OmegaConf.to_container(attr_value))
-                            elif isinstance(attr_value, DictConfig):
-                                setattr(config, attr_name, OmegaConf.to_container(attr_value))
-            
-            self.model.save_pretrained(save_path)
+        """Saves the LoRA adapter weights."""
+        if isinstance(self.model, PeftModel):
+            try:
+                self.model.save_pretrained(save_path)
+                logger.info(f"LoRA adapters saved to {save_path}")
+            except Exception as e:
+                logger.error(f"Failed to save LoRA adapters: {e}")
+                raise
         else:
-            raise AttributeError("Model doesn't support saving LoRA adapters")
-
-    def load_lora_adapters(self, load_path):
-        if hasattr(self.model, 'get_base_model'):
-            base_model = self.model.get_base_model()
-            self.model = PeftModel.from_pretrained(base_model, load_path)
-        else:
-            raise AttributeError("Model doesn't support loading LoRA adapters")
+            logger.warning("Model is not a PeftModel, so no LoRA adapters to save.")
 
 
 def create_lora_config(
@@ -185,32 +163,34 @@ def create_lora_config(
     return config
 
 
-def load_esm_with_lora(model_name="facebook/esm2_t30_150M_UR50D", lora_params=None):
+def load_esm_with_lora(model_name="facebook/esm2_t30_150M_UR50D", lora_params=None, lora_weights_path=None):
     """
-    Load ESM model with optional LoRA configuration
+    Load ESM model with optional LoRA configuration and weights.
+
+    Args:
+        model_name (str): The name of the pre-trained ESM model.
+        lora_params (dict, optional): Parameters for LoRA configuration.
+        lora_weights_path (str, optional): Path to pre-trained LoRA adapter weights.
+
+    Returns:
+        tuple: A tuple containing the model and tokenizer.
     """
     if lora_params is None:
         lora_params = {}
 
-    lora_config = create_lora_config(**lora_params)
-
-    # Load config and base model outside the custom class
     config = EsmConfig.from_pretrained(model_name)
+    base_model = EsmModel.from_pretrained(model_name, config=config, torch_dtype=torch.float32)
 
-    # Load base model without applying LoRA first
-    base_model = EsmModel.from_pretrained(
-        model_name,
-        config=config,
-        torch_dtype=torch.float32
-    )
-    
-    # After base model is loaded, then apply the wrapper with LoRA
-    model = ESMWithConstraints(
-        base_model=base_model,
-        config=config,
-        lora_config=lora_config
-    )
-    
+    if lora_weights_path:
+        logger.info(f"Loading LoRA adapters from {lora_weights_path}")
+        # Load the PEFT model directly from the path
+        peft_model = PeftModel.from_pretrained(base_model, lora_weights_path)
+        model = GeoTuneESMModel(base_model=peft_model, config=config)
+    else:
+        logger.info("Initializing new LoRA adapters")
+        lora_config = create_lora_config(**lora_params)
+        model = GeoTuneESMModel(base_model=base_model, config=config, lora_config=lora_config)
+
     tokenizer = EsmTokenizer.from_pretrained(model_name)
     
     return model, tokenizer

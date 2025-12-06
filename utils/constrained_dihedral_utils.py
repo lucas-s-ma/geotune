@@ -212,9 +212,9 @@ class MultiConstraintLagrangian(nn.Module):
         # Dual variables (Lagrange multipliers, non-negative) for each sample in the dataset.
         # We register them as buffers so they are moved to the correct device with the module,
         # but are not considered model parameters by the optimizer.
-        self.register_buffer('lam_dihedral', torch.full((num_training_samples,), 0.01))
-        self.register_buffer('lam_gnn', torch.full((num_training_samples,), 0.01))
-        self.register_buffer('lam_foldseek', torch.full((num_training_samples,), 0.01))
+        self.register_buffer('lam_dihedral', torch.full((num_training_samples,), 0.00))
+        self.register_buffer('lam_gnn', torch.full((num_training_samples,), 0.00))
+        self.register_buffer('lam_foldseek', torch.full((num_training_samples,), 0.00))
 
     def compute_lagrangian(self, primary_loss, dihedral_losses, gnn_losses, foldseek_losses, indices):
         """
@@ -269,7 +269,9 @@ class MultiConstraintLagrangian(nn.Module):
 
             # Update GNN multipliers
             self.lam_gnn[indices] += self.dual_lr * gnn_violations
-            self.lam_gnn[indices].clamp_(min=0.0)
+            
+            # Note: clam should clamp to 0 $$$$$$$$$$$$$$$$$$$$$$$$$$ $$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$
+            self.lam_gnn[indices].data.clamp_(min=0.0)
 
             # Update foldseek multipliers
             self.lam_foldseek[indices] += self.dual_lr * foldseek_violations
