@@ -250,21 +250,6 @@ class StructureAlignmentLoss(nn.Module):
         return physical_loss, physical_loss_per_sample
 
 
-def visualize_confusion_matrix(true_tokens, pred_tokens, save_path="confusion_matrix.png"):
-    """
-    Visualizes the confusion matrix for structural token predictions.
-    """
-    import numpy as np
-    cm = confusion_matrix(true_tokens, pred_tokens, labels=np.arange(21))
-    plt.figure(figsize=(12, 10))
-    sns.heatmap(cm, annot=True, fmt='d', cmap='Blues')
-    plt.xlabel("Predicted")
-    plt.ylabel("True")
-    plt.title("Confusion Matrix for Structural Token Prediction")
-    plt.savefig(save_path)
-    print(f"Confusion matrix saved to {save_path}")
-    plt.close()
-
 
 class PretrainedGNNWrapper(nn.Module):
     """

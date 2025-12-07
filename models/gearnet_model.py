@@ -70,8 +70,8 @@ class GearNet(nn.Module, core.Configurable):
         try:
             from torchdrug.models.gearnet import GeometryAwareRelationalGraphNeuralNetwork
             self.using_torchdrug_gearnet = True
-        except ImportError:
-            print("TorchDrug not available. GearNet will not work.")
+        except (ImportError, OSError) as e:
+            print(f"TorchDrug not available or failed to load: {e}. GearNet will not work.")
             self.using_torchdrug_gearnet = False
             return
 
@@ -186,8 +186,8 @@ class GearNetFromCoordinates(nn.Module):
         try:
             from torchdrug.models.gearnet import GeometryAwareRelationalGraphNeuralNetwork
             self.using_torchdrug_gearnet = True
-        except ImportError:
-            print("TorchDrug not available. GearNet cannot be created.")
+        except (ImportError, OSError) as e:
+            print(f"TorchDrug not available or failed to load: {e}. GearNet cannot be created.")
             self.using_torchdrug_gearnet = False
             return
 
@@ -354,7 +354,7 @@ def create_pretrained_gearnet(hidden_dim=512, freeze=True):
     )
 
     if not model.using_torchdrug_gearnet:
-        raise ImportError("TorchDrug is required but not available. Please install torchdrug: pip install torchdrug")
+        raise ImportError("TorchDrug is required but not available or failed to load properly.")
 
     print("Using randomly initialized GearNet. Pre-trained weights are not loaded.")
 
