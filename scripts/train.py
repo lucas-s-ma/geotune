@@ -496,6 +496,9 @@ def main():
                 with open(sample_embedding_file, 'rb') as f:
                     sample_data = pickle.load(f)
                     sample_embeddings = sample_data['embeddings']
+                    # Convert list back to numpy array to check dimensions
+                    if isinstance(sample_embeddings, list):
+                        sample_embeddings = np.array(sample_embeddings)
                     if len(sample_embeddings.shape) >= 2 and sample_embeddings.shape[-1] == esm_hidden_size:
                         load_embeddings = True
                         print(f"Pre-computed embeddings found with correct dimension {esm_hidden_size}, will load them.")

@@ -50,6 +50,48 @@ def generate_gearnet_embeddings_for_protein(n_coords, ca_coords, c_coords, model
     return embeddings
 
 
+def save_embeddings_file(output_file, protein_id, embeddings, sequence_length):
+    """
+    Save embeddings to file, with pickling-safe format
+    """
+    # Ensure embeddings are properly handled to avoid pickling issues
+    if isinstance(embeddings, np.ndarray):
+        # Convert to a "clean" numpy array to avoid pickling issues
+        embeddings = np.asarray(embeddings).copy()
+    else:
+        embeddings = np.asarray(embeddings)
+
+    # Save individual embedding file immediately to free memory
+    embedding_data = {
+        'protein_id': protein_id,
+        'embeddings': embeddings.tolist(),  # Convert to list to avoid pickling issues
+        'sequence_length': int(sequence_length)
+    }
+
+    with open(output_file, 'wb') as f:
+        pickle.dump(embedding_data, f)
+
+
+def load_embeddings_file(embedding_file):
+    """
+    Load embeddings from file and return as numpy array
+    """
+    with open(embedding_file, 'rb') as f:
+        embedding_data = pickle.load(f)
+
+    embeddings = embedding_data['embeddings']
+    if isinstance(embeddings, list):
+        # Convert list back to numpy array
+        embeddings = np.array(embeddings, dtype=np.float32)
+    elif isinstance(embeddings, np.ndarray):
+        # Create a new array to avoid reference issues
+        embeddings = np.array(embeddings, copy=True, dtype=np.float32)
+    else:
+        embeddings = np.array(embeddings, dtype=np.float32)
+
+    return embeddings, embedding_data['protein_id'], embedding_data['sequence_length']
+
+
 def generate_gearnet_embeddings_for_dataset(processed_dataset_path, output_dir, model_path=None, hidden_dim=512, chunk_size=50):
     """
     Generate GearNet embeddings for an entire processed dataset with memory-efficient processing
@@ -112,19 +154,9 @@ def generate_gearnet_embeddings_for_dataset(processed_dataset_path, output_dir, 
                     n_coords, ca_coords, c_coords, model, device
                 )
 
-                # Ensure embeddings are properly handled to avoid pickling issues
-                embeddings = np.array(embeddings, copy=True) if isinstance(embeddings, np.ndarray) else embeddings
-
                 # Save individual embedding file immediately to free memory
                 output_file = os.path.join(output_dir, f"{protein_id}_gearnet_embeddings.pkl")
-                embedding_data = {
-                    'protein_id': protein_id,
-                    'embeddings': embeddings,
-                    'sequence_length': int(embeddings.shape[0])
-                }
-
-                with open(output_file, 'wb') as f:
-                    pickle.dump(embedding_data, f)
+                save_embeddings_file(output_file, protein_id, embeddings, embeddings.shape[0])
 
                 successful_count += 1
 

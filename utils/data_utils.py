@@ -417,11 +417,14 @@ class EfficientProteinDataset(Dataset):
                         embedding_data = pickle.load(f)
                         # Store only the embeddings array and ensure it's a proper numpy array
                         embeddings = embedding_data['embeddings']
-                        if isinstance(embeddings, np.ndarray):
+                        if isinstance(embeddings, list):
+                            # Convert list back to numpy array
+                            embeddings_dict[protein_id] = np.array(embeddings, dtype=np.float32)
+                        elif isinstance(embeddings, np.ndarray):
                             # Create a new array to avoid reference issues
-                            embeddings_dict[protein_id] = np.array(embeddings, copy=True)
+                            embeddings_dict[protein_id] = np.array(embeddings, copy=True, dtype=np.float32)
                         else:
-                            embeddings_dict[protein_id] = embeddings
+                            embeddings_dict[protein_id] = np.array(embeddings, dtype=np.float32)
                 except Exception as e:
                     print(f"Error loading embedding file {embedding_path}: {e}")
 

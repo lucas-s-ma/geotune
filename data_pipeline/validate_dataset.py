@@ -119,7 +119,11 @@ def validate_gearnet_embeddings(embeddings_path, expected_dim=None):
             sample_file = os.path.join(embeddings_path, embedding_files[0])
             with open(sample_file, 'rb') as f:
                 sample_data = pickle.load(f)
-                embedding_dim = sample_data['embeddings'].shape[-1]
+                embeddings = sample_data['embeddings']
+                # Convert list back to numpy array to check dimensions
+                if isinstance(embeddings, list):
+                    embeddings = np.array(embeddings)
+                embedding_dim = embeddings.shape[-1]
                 if embedding_dim != expected_dim:
                     print(f"❌ Error: Embedding dimension mismatch. Expected {expected_dim}, found {embedding_dim}")
                     return False
