@@ -6,6 +6,7 @@ import os
 import sys
 import argparse
 import numpy as np
+from Bio.PDB import PDBParser
 # Note: Bio.PDB imports are likely inside your data_utils, which is good practice.
 # from Bio.PDB import PDBParser
 # from Bio.PDB.DSSP import DSSP
@@ -39,30 +40,50 @@ def create_efficient_dataset(raw_dir, output_dir, include_structural_tokens=True
     """
     print(f"Creating efficient dataset from {raw_dir}")
 
-    # Use the ProteinStructureDataset to process all files at once
-    temp_dataset = ProteinStructureDataset(raw_dir)
+    # Get list of PDB files to process
+    pdb_files = []
+    for file in os.listdir(raw_dir):
+        if file.lower().endswith('.pdb'):
+            pdb_files.append(os.path.join(raw_dir, file))
 
-    print(f"Processed {len(temp_dataset.proteins)} proteins from PDB files")
+    print(f"Found {len(pdb_files)} PDB files to process")
+
+    # Process proteins one by one to avoid memory issues
+    proteins = []
+    parser = PDBParser(QUIET=True)
+
+    for i, pdb_file in enumerate(tqdm(pdb_files, desc="Processing PDB files")):
+        try:
+            # Parse PDB file directly without loading all into memory
+            protein_data = extract_protein_info_single(parser, pdb_file)
+            if protein_data is not None:
+                # Handle numpy arrays for safe pickling
+                safe_protein = {}
+                for key, value in protein_data.items():
+                    if isinstance(value, np.ndarray):
+                        safe_protein[key] = np.array(value, copy=True)
+                    else:
+                        safe_protein[key] = value
+                proteins.append(safe_protein)
+                print(f"  Processed {protein_data['id']}")
+            else:
+                print(f"  Failed to process {pdb_file}")
+        except Exception as e:
+            print(f"  Error processing {pdb_file}: {e}")
+
+    print(f"Processed {len(proteins)} proteins from PDB files")
 
     # Generate structural tokens if requested
     if include_structural_tokens:
         print("Generating Foldseek structural tokens for each protein...")
         structural_tokens_list = []
 
-        # Get list of PDB files to process
-        pdb_files = []
-        for file in os.listdir(raw_dir):
-            if file.lower().endswith('.pdb'):
-                pdb_files.append(os.path.join(raw_dir, file))
-
-        print(f"Found {len(pdb_files)} PDB files to process for structural tokens")
-
         for i, pdb_file in enumerate(tqdm(pdb_files, desc="Generating Foldseek structural tokens")):
             pdb_name = os.path.splitext(os.path.basename(pdb_file))[0]
 
             # Find corresponding protein data in the processed dataset
             protein_data = None
-            for protein in temp_dataset.proteins:
+            for protein in proteins:
                 if protein['id'] == pdb_name:
                     protein_data = protein
                     break
@@ -89,27 +110,14 @@ def create_efficient_dataset(raw_dir, output_dir, include_structural_tokens=True
     os.makedirs(output_dir, exist_ok=True)
     dataset_file = os.path.join(output_dir, "processed_dataset.pkl")
 
-    # Prepare the dataset for safe pickling by ensuring numpy arrays are handled properly
-    safe_proteins = []
-    for protein in temp_dataset.proteins:
-        safe_protein = {}
-        for key, value in protein.items():
-            # Convert numpy arrays to new arrays to ensure proper serialization
-            if isinstance(value, np.ndarray):
-                # Create a completely new array with the same content
-                safe_protein[key] = np.array(value, copy=True)
-            else:
-                safe_protein[key] = value
-        safe_proteins.append(safe_protein)
-
     with open(dataset_file, 'wb') as f:
-        pickle.dump(safe_proteins, f)
+        pickle.dump(proteins, f)
 
-    print(f"Saved processed dataset to {dataset_file} with {len(temp_dataset.proteins)} proteins")
+    print(f"Saved processed dataset to {dataset_file} with {len(proteins)} proteins")
 
     # Also create a mapping file that maps indices to protein IDs
     id_mapping = {}
-    for i, protein in enumerate(temp_dataset.proteins):
+    for i, protein in enumerate(proteins):
         id_mapping[i] = protein['id']
 
     mapping_file = os.path.join(output_dir, "id_mapping.json")
@@ -138,35 +146,121 @@ def create_efficient_dataset(raw_dir, output_dir, include_structural_tokens=True
     return dataset_file, mapping_file
 
 
+def extract_protein_info_single(parser, pdb_path):
+    """Extract sequence and structural information from a single PDB file including N, CA, C coordinates"""
+    try:
+        # Parse PDB file
+        structure = parser.get_structure('protein', pdb_path)
+
+        # Get first model
+        model = structure[0]  # First model
+
+        # Extract sequence and coordinates
+        sequence = ""
+        n_coords = []
+        ca_coords = []
+        c_coords = []
+
+        for chain in model:
+            for residue in chain:
+                # Check if it's a protein residue
+                if residue.get_resname() in ['ALA', 'ARG', 'ASN', 'ASP', 'CYS',
+                                             'GLN', 'GLU', 'GLY', 'HIS', 'ILE',
+                                             'LEU', 'LYS', 'MET', 'PHE', 'PRO',
+                                             'SER', 'THR', 'TRP', 'TYR', 'VAL']:
+                    # Get residue name
+                    aa_code = three_to_one(residue.get_resname())
+                    if aa_code != 'X':  # Unknown amino acid
+                        sequence += aa_code
+
+                        # Try to get backbone atom coordinates
+                        n_coord = ca_coord = c_coord = None
+
+                        try:
+                            n_atom = residue['N']
+                            n_coord = [n_atom.get_coord()[0], n_atom.get_coord()[1], n_atom.get_coord()[2]]
+                        except KeyError:
+                            pass  # N coordinate not available
+
+                        try:
+                            ca_atom = residue['CA']
+                            ca_coord = [ca_atom.get_coord()[0], ca_atom.get_coord()[1], ca_atom.get_coord()[2]]
+                        except KeyError:
+                            pass  # CA coordinate not available
+
+                        try:
+                            c_atom = residue['C']
+                            c_coord = [c_atom.get_coord()[0], c_atom.get_coord()[1], c_atom.get_coord()[2]]
+                        except KeyError:
+                            pass  # C coordinate not available
+
+                        n_coords.append(n_coord if n_coord is not None else [0, 0, 0])  # Use zero if not available
+                        ca_coords.append(ca_coord if ca_coord is not None else [0, 0, 0])  # Use zero if not available
+                        c_coords.append(c_coord if c_coord is not None else [0, 0, 0])  # Use zero if not available
+
+        if len(sequence) > 0:
+            # Ensure all coordinate lists have the same length
+            min_len = min(len(sequence), len(n_coords), len(ca_coords), len(c_coords))
+            sequence = sequence[:min_len]
+            n_coords = n_coords[:min_len]
+            ca_coords = ca_coords[:min_len]
+            c_coords = c_coords[:min_len]
+
+            return {
+                'sequence': sequence,
+                'n_coords': np.array(n_coords),
+                'ca_coords': np.array(ca_coords),
+                'c_coords': np.array(c_coords),
+                'id': os.path.basename(pdb_path).replace('.pdb', '')
+            }
+
+    except Exception as e:
+        print(f"Error processing {pdb_path}: {e}")
+        return None
+
+def three_to_one(three_letter):
+    """Convert three-letter amino acid code to one-letter (standalone function)"""
+    mapping = {
+        'ALA': 'A', 'ARG': 'R', 'ASN': 'N', 'ASP': 'D', 'CYS': 'C',
+        'GLN': 'Q', 'GLU': 'E', 'GLY': 'G', 'HIS': 'H', 'ILE': 'I',
+        'LEU': 'L', 'LYS': 'K', 'MET': 'M', 'PHE': 'F', 'PRO': 'P',
+        'SER': 'S', 'THR': 'T', 'TRP': 'W', 'TYR': 'Y', 'VAL': 'V'
+    }
+    return mapping.get(three_letter, 'X')
+
+
 def process_directory(input_dir, output_dir, pdb_extensions=['.pdb', '.ent']):
     """
-    Process all PDB files in a directory by initializing the dataset once.
-    This is much more efficient than processing files one by one.
+    Process all PDB files in a directory individually to reduce memory usage.
+    This is more memory-efficient than loading all files into memory at once.
 
     Args:
         input_dir: Directory containing PDB files
         output_dir: Directory to save processed features
-        pdb_extensions: List of file extensions to process (Note: This is now likely handled by ProteinStructureDataset)
+        pdb_extensions: List of file extensions to process (Note: extensions are now ignored, only .pdb is processed)
     """
     # Create output directory if it doesn't exist
     os.makedirs(output_dir, exist_ok=True)
 
-    # --- EFFICIENT REFACTOR ---
-    # Initialize the dataset ONCE. This will process all PDBs in the input_dir internally,
-    # avoiding the massive overhead of calling DSSP for each file in a separate process.
-    print("Initializing dataset and processing all PDB files in memory...")
-    # This assumes your ProteinStructureDataset class finds and processes all valid PDB files in the given directory.
-    dataset = ProteinStructureDataset(input_dir)
-    print(f"Found and processed {len(dataset.proteins)} proteins. Now saving features to disk...")
+    # Get list of PDB files to process
+    pdb_files = []
+    for file in os.listdir(input_dir):
+        if file.lower().endswith('.pdb'):
+            pdb_files.append(os.path.join(input_dir, file))
+
+    print(f"Found {len(pdb_files)} PDB files to process individually")
 
     success_count = 0
     fail_count = 0
     processed_files_list = []
+    parser = PDBParser(QUIET=True)
 
-    # Loop through the pre-processed protein data and save each to a separate file
-    for protein_info in tqdm(dataset.proteins, desc="Saving processed features"):
+    # Process each file individually to reduce memory usage
+    for pdb_file in tqdm(pdb_files, desc="Processing PDB files"):
         try:
-            # Ensure protein_info is not None and has an 'id'
+            # Process single PDB file
+            protein_info = extract_protein_info_single(parser, pdb_file)
+
             if protein_info and 'id' in protein_info:
                 protein_id = protein_info['id']
                 output_file = os.path.join(output_dir, f"{protein_id}_features.pkl")
@@ -185,14 +279,13 @@ def process_directory(input_dir, output_dir, pdb_extensions=['.pdb', '.ent']):
                 processed_files_list.append(os.path.basename(output_file))
                 success_count += 1
             else:
-                # This case handles if the dataset processing returned a None entry
-                print("Warning: A processed item was empty or lacked an ID.")
+                print(f"Warning: Could not process {pdb_file} or file lacked an ID.")
                 fail_count += 1
 
         except Exception as e:
             # Get protein ID for a more informative error message if possible
-            pid_for_error = protein_info.get('id', 'UNKNOWN') if isinstance(protein_info, dict) else 'UNKNOWN'
-            print(f"Error saving features for protein {pid_for_error}: {e}")
+            protein_id = os.path.basename(pdb_file).replace('.pdb', '')
+            print(f"Error processing protein {protein_id}: {e}")
             fail_count += 1
 
     print(f"\nProcessing completed! Success: {success_count}, Failed: {fail_count}")
@@ -201,7 +294,7 @@ def process_directory(input_dir, output_dir, pdb_extensions=['.pdb', '.ent']):
     summary = {
         "input_dir": input_dir,
         "output_dir": output_dir,
-        "total_files_processed": len(dataset.proteins),
+        "total_files_processed": len(pdb_files),
         "successful_saves": success_count,
         "failed_saves": fail_count,
         "processed_files": processed_files_list

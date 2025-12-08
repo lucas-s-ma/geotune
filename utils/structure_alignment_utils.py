@@ -8,7 +8,6 @@ import torch.nn as nn
 import torch.nn.functional as F
 import seaborn as sns
 import matplotlib.pyplot as plt
-from sklearn.metrics import confusion_matrix
 
 class LabelSmoothingCrossEntropy(nn.Module):
     """
