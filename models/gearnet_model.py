@@ -183,13 +183,7 @@ class GearNetFromCoordinates(nn.Module):
         self.freeze = freeze
 
         # Import GearNet model from TorchDrug inside the initialization
-        try:
-            from torchdrug.models.gearnet import GeometryAwareRelationalGraphNeuralNetwork
-            self.using_torchdrug_gearnet = True
-        except (ImportError, OSError) as e:
-            print(f"TorchDrug not available or failed to load: {e}. GearNet cannot be created.")
-            self.using_torchdrug_gearnet = False
-            return
+        from torchdrug.models.gearnet import GeometryAwareRelationalGraphNeuralNetwork
 
         # Create actual GearNet model with parameters that work across different TorchDrug versions
         # The exact API can vary depending on the version of TorchDrug you have installed
@@ -334,7 +328,7 @@ class GearNetFromCoordinates(nn.Module):
         # Pass through GearNet model in float32 mode
         print(f"  [GEARNET DEBUG] Starting GearNet model forward pass...")
         model_start = time.time()
-        with torch.cuda.amp.autocast(enabled=False):  # Disable autocast for this forward pass
+        with torch.amp.autocast('cuda', enabled=False):  # Disable autocast for this forward pass
             output = self.gearnet_model(batched_graph, batched_graph.node_feature)
         print(f"  [GEARNET DEBUG] Model forward pass took {time.time() - model_start:.3f}s")
 
@@ -360,14 +354,13 @@ class GearNetFromCoordinates(nn.Module):
         return final_embeddings
 
 
-def create_pretrained_gearnet(hidden_dim=512, freeze=True):
+def create_pretrained_gearnet(hidden_dim=512, pretrained_path=None, freeze=True):
     """
-    Factory function to create a pre-trained GearNet model.
-    Note: This implementation uses a randomly initialized GearNet model.
-    Loading pre-trained weights is not currently supported in this script.
+    Factory function to create a pre-trained GearNet model
 
     Args:
         hidden_dim: Hidden dimension for the model
+        pretrained_path: Path to pre-trained weights (if available)
         freeze: Whether to freeze the model during training
 
     Returns:
@@ -375,13 +368,19 @@ def create_pretrained_gearnet(hidden_dim=512, freeze=True):
     """
     model = GearNetFromCoordinates(
         hidden_dim=hidden_dim,
+        pretrained_path=pretrained_path,
         freeze=freeze
     )
 
-    if not model.using_torchdrug_gearnet:
-        raise ImportError("TorchDrug is required but not available or failed to load properly.")
-
-    print("Using randomly initialized GearNet. Pre-trained weights are not loaded.")
+    if pretrained_path:
+        # Load pre-trained weights if provided
+        try:
+            state_dict = torch.load(pretrained_path, map_location='cpu')
+            model.load_state_dict(state_dict)
+            print(f"Loaded pre-trained GearNet weights from {pretrained_path}")
+        except Exception as e:
+            print(f"Could not load pre-trained weights from {pretrained_path}: {e}")
+            print("Using randomly initialized GearNet")
 
     return model
 
