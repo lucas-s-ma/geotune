@@ -176,8 +176,10 @@ class DihedralAngleConstraint(nn.Module):
                 loss = (loss * valid_mask).sum() / valid_mask.sum()
             else:
                 loss = torch.tensor(0.0, device=true_cos.device, requires_grad=True)
-        
-        return angle_loss
+        else:
+            loss = loss.mean()
+
+        return loss
 
 import matplotlib.pyplot as plt
 

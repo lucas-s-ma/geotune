@@ -438,14 +438,16 @@ def main():
             'trainable_percentage': trainable_params/total_params*100
         })
 
+    # Get ESM model's hidden dimension (used by dihedral constraints, structure alignment, and GNN)
+    esm_hidden_size = model.config.hidden_size
+
     # Initialize dihedral angle constraints
     dihedral_constraints = DihedralAngleConstraint(
+        hidden_dim=esm_hidden_size,
         constraint_weight=config.model.constraint_weight
     ).to(device)
 
     # Initialize structure alignment loss module
-    # Use ESM model's hidden dimension for the projection dimensions
-    esm_hidden_size = model.config.hidden_size
     structure_alignment_loss = StructureAlignmentLoss(
         hidden_dim=esm_hidden_size,
         num_structural_classes=21,  # 21 structural classes for Foldseek (20 + 'X')
