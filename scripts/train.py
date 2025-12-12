@@ -14,6 +14,7 @@ import transformers
 print(f"PyTorch version: {torch.__version__}")
 print(f"Transformers version: {transformers.__version__}")
 import torch.nn as nn
+import numpy as np
 from torch.utils.data import DataLoader
 from transformers import get_linear_schedule_with_warmup
 from tqdm import tqdm
@@ -98,27 +99,74 @@ def train_epoch(model, dataloader, optimizer, scheduler, dihedral_constraints, d
             if geom_feats is not None:
                 geom_feats = geom_feats.to(device)
 
-            outputs = model(
-                input_ids=input_ids,
+            # Calculate MLM loss (masked language modeling)
+            # Create random masks for the MLM task
+            mask_ratio = 0.15
+            mask_positions = (torch.rand(input_ids.shape, device=device) < mask_ratio) & attention_mask.bool()
+            labels = input_ids.clone()
+            labels[~mask_positions] = -100  # Ignore non-masked positions in loss
+
+            # Create masked input
+            masked_input_ids = input_ids.clone()
+            masked_input_ids[mask_positions] = 32  # ESM2 mask token ID
+
+            # Forward pass with masked input
+            masked_outputs = model(
+                input_ids=masked_input_ids,
                 attention_mask=attention_mask,
                 geometric_features=geom_feats
             )
 
-            # Calculate MLM loss (masked language modeling)
-            seq_output = outputs['sequence_output']
-            
-            # ... (rest of the MLM loss calculation)
+            # Get sequence output and calculate MLM loss
+            pLM_embeddings = masked_outputs['sequence_output']
+            seq_logits = model.lm_head(pLM_embeddings)
+            mlm_loss = nn.CrossEntropyLoss(ignore_index=-100)(
+                seq_logits.view(-1, seq_logits.size(-1)),
+                labels.view(-1)
+            )
 
-            # Calculate geometric loss if available
-            geom_loss = outputs.get('geom_loss', None)
-            if geom_loss is None:
-                geom_loss = torch.tensor(0.0, device=device)
+            # Calculate dihedral constraint loss
+            dihedral_losses = dihedral_constraints(
+                pLM_embeddings,
+                n_coords,
+                ca_coords,
+                c_coords,
+                attention_mask
+            )
+            total_dihedral_loss = dihedral_losses['total_dihedral_loss']
+
+            # Calculate structure alignment loss
+            struct_align_loss = torch.tensor(0.0, device=device)
+            latent_loss = torch.tensor(0.0, device=device)
+            physical_loss = torch.tensor(0.0, device=device)
+
+            if structure_alignment_loss is not None and has_structural_tokens and 'structural_tokens' in batch:
+                # Get structural tokens
+                structure_tokens = batch['structural_tokens'].to(device)
+
+                # Use pre-computed embeddings if available, otherwise generate using frozen GNN
+                if has_precomputed_embeddings:
+                    pGNN_embeddings = batch['precomputed_embeddings'].to(device)
+                else:
+                    # Generate pGNN embeddings using the frozen GNN (inference only)
+                    with torch.no_grad():
+                        pGNN_embeddings = frozen_gnn(n_coords, ca_coords, c_coords)
+
+                # Calculate structure alignment loss
+                struct_align_results = structure_alignment_loss(
+                    pLM_embeddings=pLM_embeddings,
+                    pGNN_embeddings=pGNN_embeddings,
+                    structure_tokens=structure_tokens,
+                    attention_mask=attention_mask
+                )
+                struct_align_loss = struct_align_results['total_loss']
+                latent_loss = struct_align_results.get('latent_loss', torch.tensor(0.0, device=device))
+                physical_loss = struct_align_results.get('physical_loss', torch.tensor(0.0, device=device))
 
             # Combine all losses
             combined_loss = mlm_loss + \
                             config.model.constraint_weight * total_dihedral_loss + \
-                            0.1 * struct_align_loss + \
-                            model.geom_loss_weight * geom_loss
+                            0.1 * struct_align_loss
 
             # Scale loss for gradient accumulation
             combined_loss = combined_loss / gradient_accumulation_steps

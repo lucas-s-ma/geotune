@@ -101,10 +101,25 @@ def generate_gearnet_embeddings_for_dataset(processed_dataset_path, output_dir, 
         output_dir: Directory to save GearNet embeddings
         model_path: Path to pre-trained model (uses proper GearNet implementation if available)
         hidden_dim: Hidden dimension for the model
+                    IMPORTANT: This MUST match your ESM2 model's hidden_size:
+                    - ESM2-8M (facebook/esm2_t6_8M_UR50D): 320
+                    - ESM2-35M (facebook/esm2_t12_35M_UR50D): 480
+                    - ESM2-150M (facebook/esm2_t30_150M_UR50D): 640
+                    - ESM2-650M (facebook/esm2_t33_650M_UR50D): 1280
         chunk_size: Number of proteins to process before clearing GPU cache
     """
     print(f"Generating GearNet embeddings from {processed_dataset_path}")
     print(f"Processing in chunks of {chunk_size} proteins to manage memory")
+    print(f"Hidden dimension: {hidden_dim}")
+
+    # Validate hidden_dim matches common ESM2 models
+    esm_dims = {320: 'ESM2-8M', 480: 'ESM2-35M', 640: 'ESM2-150M', 1280: 'ESM2-650M'}
+    if hidden_dim in esm_dims:
+        print(f"✓ Hidden dimension {hidden_dim} matches {esm_dims[hidden_dim]}")
+    else:
+        print(f"⚠ WARNING: Hidden dimension {hidden_dim} does not match standard ESM2 models!")
+        print(f"  Standard dimensions: {list(esm_dims.keys())}")
+        print(f"  Make sure this matches your ESM2 model's hidden_size!")
 
     # Load the processed dataset metadata
     dataset_file = os.path.join(processed_dataset_path, "processed_dataset.pkl")
