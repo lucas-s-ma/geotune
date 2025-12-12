@@ -60,4 +60,4 @@ constraints:
   distance_weight: 1.0    # Weight for distance constraints
   angle_weight: 0.5       # Weight for angle constraints
   neighborhood_weight: 0.5  # Weight for neighborhood constraints
-  use_structure_alignment: false  # Set to false to disable GearNet-based structure alignment (faster training if embeddings not pre-computed)
+  use_structure_alignment: true  # Enable structure alignment with on-the-fly embedding generation and caching
