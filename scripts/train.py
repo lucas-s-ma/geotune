@@ -149,8 +149,20 @@ def train_epoch(model, dataloader, optimizer, scheduler, dihedral_constraints, d
                     pGNN_embeddings = batch['precomputed_embeddings'].to(device)
                 else:
                     # Generate pGNN embeddings using the frozen GNN (inference only)
+                    # Process one protein at a time since GearNet works best with batch_size=1
                     with torch.no_grad():
-                        pGNN_embeddings = frozen_gnn(n_coords, ca_coords, c_coords)
+                        batch_size_gnn = n_coords.shape[0]
+                        pGNN_embeddings_list = []
+                        for i in range(batch_size_gnn):
+                            # Process single protein
+                            single_pGNN = frozen_gnn(
+                                n_coords[i:i+1],
+                                ca_coords[i:i+1],
+                                c_coords[i:i+1]
+                            )
+                            pGNN_embeddings_list.append(single_pGNN)
+                        # Stack results back into batch
+                        pGNN_embeddings = torch.cat(pGNN_embeddings_list, dim=0)
 
                 # Calculate structure alignment loss
                 struct_align_results = structure_alignment_loss(
@@ -342,8 +354,20 @@ def validate(model, dataloader, dihedral_constraints, device, config, structure_
                     pGNN_embeddings = batch['precomputed_embeddings'].to(device)
                 else:
                     # Generate pGNN embeddings using the frozen GNN (inference only)
+                    # Process one protein at a time since GearNet works best with batch_size=1
                     with torch.no_grad():
-                        pGNN_embeddings = frozen_gnn(n_coords, ca_coords, c_coords)
+                        batch_size_gnn = n_coords.shape[0]
+                        pGNN_embeddings_list = []
+                        for i in range(batch_size_gnn):
+                            # Process single protein
+                            single_pGNN = frozen_gnn(
+                                n_coords[i:i+1],
+                                ca_coords[i:i+1],
+                                c_coords[i:i+1]
+                            )
+                            pGNN_embeddings_list.append(single_pGNN)
+                        # Stack results back into batch
+                        pGNN_embeddings = torch.cat(pGNN_embeddings_list, dim=0)
 
                 # Get pLM embeddings
                 pLM_embeddings = masked_outputs['sequence_output']
