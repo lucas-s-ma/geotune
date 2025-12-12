@@ -148,13 +148,13 @@ def train_epoch(model, dataloader, optimizer, scheduler, dihedral_constraints, d
                 if has_precomputed_embeddings:
                     pGNN_embeddings = batch['precomputed_embeddings'].to(device)
                 else:
-                    # Generate embeddings using cache (will generate on-the-fly and save for future epochs)
+                    # Generate embeddings using cache (generates on-the-fly and saves to disk)
                     protein_ids = batch['protein_ids']
                     batch_size_gnn = n_coords.shape[0]
                     pGNN_embeddings_list = []
 
                     for i in range(batch_size_gnn):
-                        # Get embedding from cache (generates and caches if not exists)
+                        # Get embedding from cache (generates and saves if not cached)
                         embedding = embedding_cache.get_embedding(
                             protein_id=protein_ids[i],
                             n_coords=n_coords[i],
@@ -355,13 +355,13 @@ def validate(model, dataloader, dihedral_constraints, device, config, structure_
                     # Use pre-computed embeddings
                     pGNN_embeddings = batch['precomputed_embeddings'].to(device)
                 else:
-                    # Generate embeddings using cache (will load from cache or generate if needed)
+                    # Generate embeddings using cache (generates on-the-fly and saves to disk)
                     protein_ids = batch['protein_ids']
                     batch_size_gnn = n_coords.shape[0]
                     pGNN_embeddings_list = []
 
                     for i in range(batch_size_gnn):
-                        # Get embedding from cache
+                        # Get embedding from cache (generates and saves if not cached)
                         embedding = embedding_cache.get_embedding(
                             protein_id=protein_ids[i],
                             n_coords=n_coords[i],
@@ -545,7 +545,7 @@ def main():
         ).to(device)
         frozen_gnn.eval()  # Set to evaluation mode to ensure no gradients
 
-        # Initialize embedding cache for on-the-fly generation and storage
+        # Initialize embedding cache for on-the-fly generation and disk storage
         from utils.embedding_cache import EmbeddingCache
         cache_dir = os.path.join(config.training.output_dir, "embedding_cache")
         embedding_cache = EmbeddingCache(
@@ -555,7 +555,7 @@ def main():
             verbose=True
         )
         print(f"Embedding cache initialized at: {cache_dir}")
-        print("Embeddings will be generated on-the-fly and cached for future epochs")
+        print("Embeddings will be generated on-the-fly in first epoch and cached to disk for subsequent epochs")
     else:
         print("Structure alignment loss DISABLED - training with MLM + dihedral constraints only")
         structure_alignment_loss = None
