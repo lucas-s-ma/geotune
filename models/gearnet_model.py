@@ -238,106 +238,124 @@ class GearNetFromCoordinates(nn.Module):
 
     def forward(self, n_coords, ca_coords, c_coords):
         """
-        Forward pass taking N, CA, C coordinates and returning embeddings.
-        This implementation uses a vectorized and GPU-friendly graph construction.
-        """
-        if not self.using_torchdrug_gearnet:
-            raise ImportError("TorchDrug not available. GearNet cannot run.")
+        Forward pass taking N, CA, C coordinates and returning embeddings
 
+        Args:
+            n_coords: (batch_size, seq_len, 3) N atom coordinates
+            ca_coords: (batch_size, seq_len, 3) CA atom coordinates
+            c_coords: (batch_size, seq_len, 3) C atom coordinates
+
+        Returns:
+            embeddings: (batch_size, seq_len, hidden_dim) structural embeddings
+        """
         is_half = ca_coords.dtype == torch.half
         device = ca_coords.device
 
+        # When using mixed precision, cast coords to float32 to avoid errors in graph construction
         if is_half:
+            n_coords = n_coords.float()
             ca_coords = ca_coords.float()
+            c_coords = c_coords.float()
 
         batch_size, seq_len, _ = ca_coords.shape
 
-        # Stack N, CA, C coordinates to create features
-        # In the actual GearNet, these would be used to compute geometric features
-        # For now, we'll use CA coordinates as simple node features
-        node_features = ca_coords.view(-1, 3)  # (batch_size * seq_len, 3)
+        import time
+        start_time = time.time()
+        print(f"  [GEARNET DEBUG] batch_size={batch_size}, seq_len={seq_len}")
 
-        # IMPORTANT: This code works correctly for batch_size=1 (embedding generation)
-        # For batch_size>1 (training), the caller should process proteins one-by-one
-        # and then stack the results
-
-        # Vectorized sequential edges - these are based on sequence adjacency
-        arange = torch.arange(seq_len, device=device)
-        seq_edges = []
-        for offset in [-3, -2, -1, 1, 2, 3]:
-            src = arange
-            dst = arange + offset
-            mask = (dst >= 0) & (dst < seq_len)
-            if mask.any():
-                seq_edges.append(torch.stack([src[mask], dst[mask]], dim=1))
-
-        if seq_edges:
-            seq_edge_list = torch.cat(seq_edges, dim=0)
-            seq_relation_type = torch.zeros(len(seq_edge_list), 1, dtype=torch.long, device=device)
-        else:
-            # If no sequence edges, we still need at least one edge for the graph
-            seq_edge_list = torch.zeros((1, 2), dtype=torch.long, device=device)
-            seq_relation_type = torch.zeros((1, 1), dtype=torch.long, device=device)
-
-        # Vectorized k-NN spatial edges - these are based on 3D proximity
-        # For batch_size=1: ca_coords is (1, seq_len, 3), dist_matrix is (1, seq_len, seq_len)
-        dist_matrix = torch.cdist(ca_coords, ca_coords)  # (batch_size, seq_len, seq_len)
-        k = min(10, seq_len - 1)
-        if k > 0:
-            # For batch_size=1: topk_indices is (1, seq_len, k+1)
-            topk_dists, topk_indices = torch.topk(dist_matrix, k + 1, largest=False, dim=-1)
-
-            src = torch.arange(seq_len, device=device).view(-1, 1).expand(-1, k)
-            # For batch_size=1: topk_indices[0, :, 1:] is (seq_len, k), flatten gives (seq_len*k)
-            dst = topk_indices[0, :, 1:].flatten()  # Use first (and only) batch element
-            src = src.flatten()
-            mask = (dst >= 0) & (dst < seq_len)
-            src = src[mask]
-            dst = dst[mask]
-
-            if len(src) > 0:
-                spatial_edge_list = torch.stack([src, dst], dim=1)
-                spatial_relation_type = torch.ones(len(spatial_edge_list), 1, dtype=torch.long, device=device) * 2
-
-                edge_list = torch.cat([seq_edge_list, spatial_edge_list], dim=0)
-                relation_type = torch.cat([seq_relation_type, spatial_relation_type], dim=0)
-            else:
-                edge_list = seq_edge_list
-                relation_type = seq_relation_type
-        else:
-            edge_list = seq_edge_list
-            relation_type = seq_relation_type
-
-        # Create a batch of graphs
         graphs = []
-        for i in range(batch_size):
+        for b in range(batch_size):
+            node_pos = ca_coords[b] # (seq_len, 3)
+
+            # Create geometric graph edges
+            edge_list = []
+            print(f"  [GEARNET DEBUG] Creating edges for protein {b}...")
+            edge_start = time.time()
+            for i in range(seq_len):
+                # Sequential edges (within ±3 residues)
+                for offset in [-3, -2, -1, 1, 2, 3]:
+                    j = i + offset
+                    if 0 <= j < seq_len:
+                        # Relations 0-5 for sequential neighbors
+                        relation_type = 0 if offset < 0 else 1  # Use simpler relation types
+                        edge_list.append([i, j, relation_type])
+
+            # Spatial edges (k-NN based on 3D distance)
+            if seq_len > 1:
+                dist_matrix = torch.norm(node_pos.unsqueeze(1) - node_pos.unsqueeze(0), dim=2)
+                k = min(10, seq_len - 1)  # Ensure k is not larger than sequence
+                if k > 0:
+                    _, topk_indices = torch.topk(dist_matrix, k + 1, largest=False)
+
+                    for i in range(seq_len):
+                        # Get k nearest neighbors (excluding self)
+                        nearest_neighbors = topk_indices[i, 1:k+1]
+                        for j in nearest_neighbors:
+                            # Relation type 2 for spatial neighbors
+                            edge_list.append([i, int(j.item()), 2])
+
+            print(f"  [GEARNET DEBUG] Edge creation took {time.time() - edge_start:.3f}s, created {len(edge_list)} edges")
+            tensor_start = time.time()
+
+            if edge_list:
+                edge_list_tensor = torch.tensor(edge_list, dtype=torch.long, device=device)
+            else:
+                # If no edges (very short sequence), create self loops to avoid empty graph
+                edge_list_tensor = torch.stack([
+                    torch.arange(seq_len, device=device),
+                    torch.arange(seq_len, device=device),
+                    torch.zeros(seq_len, dtype=torch.long, device=device)  # relation type 0
+                ], dim=1)
+
+            print(f"  [GEARNET DEBUG] Edge tensor creation took {time.time() - tensor_start:.3f}s")
+            graph_start = time.time()
+
             graph = data.Graph(
-                edge_list=torch.cat([edge_list, relation_type], dim=1),
+                edge_list=edge_list_tensor,
                 num_node=seq_len,
-                num_relation=7
+                node_feature=node_pos  # Use CA coordinates as node features directly
             )
             graphs.append(graph)
+            print(f"  [GEARNET DEBUG] Graph creation took {time.time() - graph_start:.3f}s")
 
-        # Batch the graphs together
-        batched_graph = data.graph_collate(graphs).to(device)
+        # Batch the graphs
+        batch_start = time.time()
+        if len(graphs) > 1:
+            batched_graph = data.graph_collate(graphs)
+        else:
+            batched_graph = graphs[0]
+        print(f"  [GEARNET DEBUG] Graph batching took {time.time() - batch_start:.3f}s")
 
-        # Set node features for the entire batch
-        batched_graph.node_feature = node_features
+        # Ensure the batched graph is on the correct device
+        device_start = time.time()
+        batched_graph = batched_graph.to(device)
+        print(f"  [GEARNET DEBUG] Moving to device took {time.time() - device_start:.3f}s")
 
-        # Forward pass through the actual GearNet model
-        with torch.amp.autocast('cuda', enabled=False):
+        # Pass through GearNet model in float32 mode
+        print(f"  [GEARNET DEBUG] Starting GearNet model forward pass...")
+        model_start = time.time()
+        with torch.cuda.amp.autocast(enabled=False):  # Disable autocast for this forward pass
             output = self.gearnet_model(batched_graph, batched_graph.node_feature)
+        print(f"  [GEARNET DEBUG] Model forward pass took {time.time() - model_start:.3f}s")
 
-        # Extract node embeddings and reshape to (batch_size, seq_len, hidden_dim)
-        node_embeddings = output.get("node_feature", output)
-        if isinstance(node_embeddings, dict):
-            node_embeddings = node_embeddings.get("node_feature", node_embeddings.get("graph_feature"))
+        # output["node_feature"] is (total_num_residues, hidden_dim)
+        node_embeddings = output["node_feature"]
 
-        # Reshape back to batch format
+        # The output should have the right size for reshaping
+        expected_nodes = batch_size * seq_len
+
+        if node_embeddings.size(0) != expected_nodes:
+            raise RuntimeError(
+                f"GearNet output size mismatch: got {node_embeddings.size(0)}, "
+                f"expected {expected_nodes} (batch_size={batch_size}, seq_len={seq_len})"
+            )
+
+        # Reshape to expected format: (batch_size, seq_len, hidden_dim)
         final_embeddings = node_embeddings.view(batch_size, seq_len, self.hidden_dim)
 
+        # If the original input was half, convert the output back to half
         if is_half:
-            final_embeddings = final_embeddings.half()
+            final_embeddings = final_embeddings.to(dtype=ca_coords.dtype)
 
         return final_embeddings
 

@@ -35,17 +35,28 @@ def generate_gearnet_embeddings_for_protein(n_coords, ca_coords, c_coords, model
     Returns:
         embeddings: (seq_len, hidden_dim) structural embeddings
     """
+    import time
+    start = time.time()
+
     # Add batch dimension and move to device
     n_coords = torch.tensor(n_coords, dtype=torch.float32).unsqueeze(0).to(device)
     ca_coords = torch.tensor(ca_coords, dtype=torch.float32).unsqueeze(0).to(device)
     c_coords = torch.tensor(c_coords, dtype=torch.float32).unsqueeze(0).to(device)
 
+    print(f"  [DEBUG] Tensor preparation: {time.time() - start:.3f}s")
+    start = time.time()
+
     # Generate embeddings using the GearNet model
     with torch.no_grad():
         embeddings = model(n_coords, ca_coords, c_coords)
 
+    print(f"  [DEBUG] Model forward pass: {time.time() - start:.3f}s")
+    start = time.time()
+
     # Remove batch dimension and convert to numpy
     embeddings = embeddings.squeeze(0).cpu().numpy()  # (seq_len, hidden_dim)
+
+    print(f"  [DEBUG] Post-processing: {time.time() - start:.3f}s")
 
     return embeddings
 
