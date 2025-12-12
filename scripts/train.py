@@ -488,7 +488,7 @@ def main():
         'r': config.lora.r,
         'lora_alpha': config.lora.alpha,
         'lora_dropout': config.lora.dropout,
-        'target_modules': config.lora.target_modules
+        'target_modules': list(config.lora.target_modules)  # Convert OmegaConf ListConfig to regular list for JSON serialization
     }
     model, tokenizer = load_esm_with_lora(config.model.model_name, lora_params)
     model.to(device)
