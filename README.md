@@ -136,6 +136,27 @@ training:
 
 If `primal_lr` and `dual_lr` are not specified, the single `learning_rate` parameter will be used for all parameters.
 
+## Training Without Structure Alignment (Faster)
+
+If you don't have pre-computed GearNet embeddings or want faster training, you can disable structure alignment:
+
+```yaml
+constraints:
+  use_structure_alignment: false  # Train with MLM + dihedral constraints only
+```
+
+This will:
+- Skip GearNet embedding generation (much faster!)
+- Train using only MLM loss + dihedral angle constraints
+- Still learn structure-aware representations through dihedral constraints
+
+**When to use this:**
+- Pre-computed embeddings have wrong dimensions and you want quick results
+- Testing/debugging the training pipeline
+- Don't have time to regenerate embeddings
+
+**Note:** For best results, enable structure alignment after regenerating embeddings with the correct dimension.
+
 ## Requirements
 
 - Python 3.8+

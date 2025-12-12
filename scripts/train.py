@@ -495,20 +495,28 @@ def main():
         constraint_weight=config.model.constraint_weight
     ).to(device)
 
-    # Initialize structure alignment loss module
-    structure_alignment_loss = StructureAlignmentLoss(
-        hidden_dim=esm_hidden_size,
-        num_structural_classes=21,  # 21 structural classes for Foldseek (20 + 'X')
-        shared_projection_dim=512,
-        latent_weight=0.5,
-        physical_weight=0.5
-    ).to(device)
+    # Initialize structure alignment loss module and GNN (if enabled)
+    use_structure_alignment = getattr(config.constraints, 'use_structure_alignment', True)
 
-    # Initialize frozen pre-trained GNN (e.g. GearNet)
-    frozen_gnn = PretrainedGNNWrapper(
-        hidden_dim=esm_hidden_size
-    ).to(device)
-    frozen_gnn.eval()  # Set to evaluation mode to ensure no gradients
+    if use_structure_alignment:
+        print("Structure alignment loss ENABLED - will use GearNet embeddings")
+        structure_alignment_loss = StructureAlignmentLoss(
+            hidden_dim=esm_hidden_size,
+            num_structural_classes=21,  # 21 structural classes for Foldseek (20 + 'X')
+            shared_projection_dim=512,
+            latent_weight=0.5,
+            physical_weight=0.5
+        ).to(device)
+
+        # Initialize frozen pre-trained GNN (e.g. GearNet)
+        frozen_gnn = PretrainedGNNWrapper(
+            hidden_dim=esm_hidden_size
+        ).to(device)
+        frozen_gnn.eval()  # Set to evaluation mode to ensure no gradients
+    else:
+        print("Structure alignment loss DISABLED - training with MLM + dihedral constraints only")
+        structure_alignment_loss = None
+        frozen_gnn = None
 
     # Load dataset
     print("Loading dataset...")
@@ -620,13 +628,14 @@ def main():
             {'params': [p for n, p in model.named_parameters() if p.requires_grad], 'lr': config.training.primal_lr},
         ]
 
-        # Dual parameters: Structure alignment loss module
-        dual_params = [
-            {'params': [p for p in structure_alignment_loss.parameters() if p.requires_grad], 'lr': config.training.dual_lr}
-        ]
-
-        # Combine parameter groups
-        param_groups = primal_params + dual_params
+        # Dual parameters: Structure alignment loss module (if enabled)
+        if structure_alignment_loss is not None:
+            dual_params = [
+                {'params': [p for p in structure_alignment_loss.parameters() if p.requires_grad], 'lr': config.training.dual_lr}
+            ]
+            param_groups = primal_params + dual_params
+        else:
+            param_groups = primal_params
 
         optimizer = torch.optim.AdamW(
             param_groups,
@@ -636,8 +645,11 @@ def main():
     else:
         # Use single learning rate for all parameters
         print(f"Using single learning rate: {config.training.learning_rate}")
-        all_params = list(filter(lambda p: p.requires_grad, model.parameters())) + \
-                     list(filter(lambda p: p.requires_grad, structure_alignment_loss.parameters()))
+        all_params = list(filter(lambda p: p.requires_grad, model.parameters()))
+
+        # Add structure alignment loss parameters if enabled
+        if structure_alignment_loss is not None:
+            all_params += list(filter(lambda p: p.requires_grad, structure_alignment_loss.parameters()))
 
         optimizer = torch.optim.AdamW(
             all_params,

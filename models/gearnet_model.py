@@ -257,53 +257,61 @@ class GearNetFromCoordinates(nn.Module):
         # For now, we'll use CA coordinates as simple node features
         node_features = ca_coords.view(-1, 3)  # (batch_size * seq_len, 3)
 
-        # Vectorized sequential edges - these are based on sequence adjacency
-        arange = torch.arange(seq_len, device=device)
-        seq_edges = []
-        for offset in [-3, -2, -1, 1, 2, 3]:
-            src = arange
-            dst = arange + offset
-            mask = (dst >= 0) & (dst < seq_len)
-            if mask.any():
-                seq_edges.append(torch.stack([src[mask], dst[mask]], dim=1))
+        # Create a batch of graphs - one per protein
+        # Each protein needs its own edge construction based on its coordinates
+        graphs = []
+        for i in range(batch_size):
+            # Get coordinates for this protein
+            ca_coords_single = ca_coords[i]  # (seq_len, 3)
 
-        if seq_edges:
-            seq_edge_list = torch.cat(seq_edges, dim=0)
-            seq_relation_type = torch.zeros(len(seq_edge_list), 1, dtype=torch.long, device=device)
-        else:
-            # If no sequence edges, we still need at least one edge for the graph
-            seq_edge_list = torch.zeros((1, 2), dtype=torch.long, device=device)
-            seq_relation_type = torch.zeros((1, 1), dtype=torch.long, device=device)
+            # Vectorized sequential edges - these are based on sequence adjacency
+            arange = torch.arange(seq_len, device=device)
+            seq_edges = []
+            for offset in [-3, -2, -1, 1, 2, 3]:
+                src = arange
+                dst = arange + offset
+                mask = (dst >= 0) & (dst < seq_len)
+                if mask.any():
+                    seq_edges.append(torch.stack([src[mask], dst[mask]], dim=1))
 
-        # Vectorized k-NN spatial edges - these are based on 3D proximity
-        dist_matrix = torch.cdist(ca_coords, ca_coords)
-        k = min(10, seq_len - 1)
-        if k > 0:
-            topk_dists, topk_indices = torch.topk(dist_matrix, k + 1, largest=False)
+            if seq_edges:
+                seq_edge_list = torch.cat(seq_edges, dim=0)
+                seq_relation_type = torch.zeros(len(seq_edge_list), 1, dtype=torch.long, device=device)
+            else:
+                # If no sequence edges, we still need at least one edge for the graph
+                seq_edge_list = torch.zeros((1, 2), dtype=torch.long, device=device)
+                seq_relation_type = torch.zeros((1, 1), dtype=torch.long, device=device)
 
-            src = torch.arange(seq_len, device=device).view(-1, 1).expand(-1, k)
-            dst = topk_indices[:, :, 1:].flatten()
-            src = src.flatten()
-            mask = (dst >= 0) & (dst < seq_len)
-            src = src[mask]
-            dst = dst[mask]
+            # Vectorized k-NN spatial edges - these are based on 3D proximity
+            dist_matrix = torch.cdist(ca_coords_single.unsqueeze(0), ca_coords_single.unsqueeze(0)).squeeze(0)  # (seq_len, seq_len)
+            k = min(10, seq_len - 1)
+            if k > 0:
+                topk_dists, topk_indices = torch.topk(dist_matrix, k + 1, largest=False, dim=1)  # (seq_len, k+1)
 
-            if len(src) > 0:
-                spatial_edge_list = torch.stack([src, dst], dim=1)
-                spatial_relation_type = torch.ones(len(spatial_edge_list), 1, dtype=torch.long, device=device) * 2
+                src = torch.arange(seq_len, device=device).view(-1, 1).expand(-1, k)  # (seq_len, k)
+                dst = topk_indices[:, 1:]  # (seq_len, k) - exclude self-loops
 
-                edge_list = torch.cat([seq_edge_list, spatial_edge_list], dim=0)
-                relation_type = torch.cat([seq_relation_type, spatial_relation_type], dim=0)
+                # Flatten and filter
+                src = src.flatten()  # (seq_len * k)
+                dst = dst.flatten()  # (seq_len * k)
+                mask = (dst >= 0) & (dst < seq_len)
+                src = src[mask]
+                dst = dst[mask]
+
+                if len(src) > 0:
+                    spatial_edge_list = torch.stack([src, dst], dim=1)
+                    spatial_relation_type = torch.ones(len(spatial_edge_list), 1, dtype=torch.long, device=device) * 2
+
+                    edge_list = torch.cat([seq_edge_list, spatial_edge_list], dim=0)
+                    relation_type = torch.cat([seq_relation_type, spatial_relation_type], dim=0)
+                else:
+                    edge_list = seq_edge_list
+                    relation_type = seq_relation_type
             else:
                 edge_list = seq_edge_list
                 relation_type = seq_relation_type
-        else:
-            edge_list = seq_edge_list
-            relation_type = seq_relation_type
 
-        # Create a batch of graphs
-        graphs = []
-        for i in range(batch_size):
+            # Create graph for this protein
             graph = data.Graph(
                 edge_list=torch.cat([edge_list, relation_type], dim=1),
                 num_node=seq_len,
