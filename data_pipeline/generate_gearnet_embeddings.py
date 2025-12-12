@@ -92,7 +92,7 @@ def load_embeddings_file(embedding_file):
     return embeddings, embedding_data['protein_id'], embedding_data['sequence_length']
 
 
-def generate_gearnet_embeddings_for_dataset(processed_dataset_path, output_dir, model_path=None, hidden_dim=512, chunk_size=50):
+def generate_gearnet_embeddings_for_dataset(processed_dataset_path, output_dir, model_path=None, hidden_dim=512, chunk_size=50, max_proteins=None):
     """
     Generate GearNet embeddings for an entire processed dataset with memory-efficient processing
 
@@ -107,6 +107,7 @@ def generate_gearnet_embeddings_for_dataset(processed_dataset_path, output_dir, 
                     - ESM2-150M (facebook/esm2_t30_150M_UR50D): 640
                     - ESM2-650M (facebook/esm2_t33_650M_UR50D): 1280
         chunk_size: Number of proteins to process before clearing GPU cache
+        max_proteins: Maximum number of proteins to process (for testing). If None, process all.
     """
     print(f"Generating GearNet embeddings from {processed_dataset_path}")
     print(f"Processing in chunks of {chunk_size} proteins to manage memory")
@@ -131,6 +132,13 @@ def generate_gearnet_embeddings_for_dataset(processed_dataset_path, output_dir, 
         proteins = pickle.load(f)
 
     total_proteins = len(proteins)
+
+    # Limit to max_proteins if specified
+    if max_proteins is not None and max_proteins < total_proteins:
+        print(f"⚠ Limiting to first {max_proteins} proteins (out of {total_proteins} total) for testing")
+        proteins = proteins[:max_proteins]
+        total_proteins = max_proteins
+
     print(f"Total proteins to process: {total_proteins}")
 
     # Initialize the GearNet model (will try to use proper implementation first)
@@ -151,13 +159,17 @@ def generate_gearnet_embeddings_for_dataset(processed_dataset_path, output_dir, 
     failed_count = 0
     chunk_count = 0
 
+    import time
+    start_time = time.time()
+
     for start_idx in tqdm(range(0, total_proteins, chunk_size), desc="Processing chunks"):
         end_idx = min(start_idx + chunk_size, total_proteins)
         chunk = proteins[start_idx:end_idx]
 
         # Process each protein in the current chunk
-        for protein in tqdm(chunk, desc=f"Processing chunk {chunk_count + 1}", leave=False):
+        for idx, protein in enumerate(tqdm(chunk, desc=f"Processing chunk {chunk_count + 1}", leave=False)):
             protein_id = protein['id']
+            protein_start_time = time.time()
 
             try:
                 n_coords = protein['n_coords']  # (seq_len, 3)
@@ -174,15 +186,24 @@ def generate_gearnet_embeddings_for_dataset(processed_dataset_path, output_dir, 
                 save_embeddings_file(output_file, protein_id, embeddings, embeddings.shape[0])
 
                 successful_count += 1
+                protein_time = time.time() - protein_start_time
 
-                # Show progress
-                current_total = start_idx + (successful_count + failed_count)
-                if current_total % 100 == 0:
-                    print(f"Progress: {current_total}/{total_proteins} proteins processed ({successful_count} successful, {failed_count} failed)")
+                # Show progress with timing every 10 proteins
+                if (successful_count + failed_count) % 10 == 0:
+                    elapsed = time.time() - start_time
+                    avg_time_per_protein = elapsed / (successful_count + failed_count)
+                    remaining_proteins = total_proteins - (successful_count + failed_count)
+                    eta_seconds = avg_time_per_protein * remaining_proteins
+                    eta_hours = eta_seconds / 3600
+
+                    print(f"\nProgress: {successful_count + failed_count}/{total_proteins} proteins")
+                    print(f"  Success: {successful_count}, Failed: {failed_count}")
+                    print(f"  Avg time/protein: {avg_time_per_protein:.2f}s")
+                    print(f"  ETA: {eta_hours:.2f} hours ({eta_seconds/60:.1f} minutes)")
 
             except Exception as e:
                 failed_count += 1
-                print(f"Error processing protein {protein_id}: {e}")
+                print(f"\nError processing protein {protein_id}: {e}")
 
                 # Continue to next protein without stopping
                 continue
@@ -225,12 +246,16 @@ def main():
                         help="Hidden dimension for the model (default: 512)")
     parser.add_argument("--chunk_size", type=int, default=50,
                         help="Number of proteins to process in each memory chunk (default: 50)")
+    parser.add_argument("--max_proteins", type=int, default=None,
+                        help="Maximum number of proteins to process (for testing). If not specified, process all.")
 
     args = parser.parse_args()
 
     print(f"Generating GearNet embeddings from {args.processed_dataset_path}")
     print(f"Output directory: {args.output_dir}")
     print(f"Memory management: Processing in chunks of {args.chunk_size} proteins")
+    if args.max_proteins:
+        print(f"Testing mode: Processing only first {args.max_proteins} proteins")
 
     # Generate embeddings
     successful_count = generate_gearnet_embeddings_for_dataset(
@@ -238,7 +263,8 @@ def main():
         args.output_dir,
         args.model_path,
         args.hidden_dim,
-        args.chunk_size
+        args.chunk_size,
+        args.max_proteins
     )
 
     print(f"Completed! Successfully generated embeddings for {successful_count} proteins")

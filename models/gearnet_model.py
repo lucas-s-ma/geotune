@@ -326,7 +326,7 @@ class GearNetFromCoordinates(nn.Module):
         batched_graph.node_feature = node_features
 
         # Forward pass through the actual GearNet model
-        with torch.cuda.amp.autocast(enabled=False):
+        with torch.amp.autocast('cuda', enabled=False):
             output = self.gearnet_model(batched_graph, batched_graph.node_feature)
 
         # Extract node embeddings and reshape to (batch_size, seq_len, hidden_dim)
