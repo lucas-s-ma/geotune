@@ -175,26 +175,39 @@ class ProteinStructureDataset(Dataset):
         }
 
         # Add structural tokens if available
-        # Use try-except to handle missing structural tokens gracefully
         if self.include_structural_tokens:
             try:
                 if idx < len(self.structural_tokens):
                     struct_tokens = self.structural_tokens[idx]
-                    struct_seq = struct_tokens['structural_tokens']  # Assuming it's in the same format
 
-                    # Truncate structural tokens to match sequence length
-                    if len(struct_seq) > self.max_seq_len:
-                        struct_seq = struct_seq[:self.max_seq_len]
+                    # Handle both dict format (with 'structural_tokens' key) and direct list
+                    if isinstance(struct_tokens, dict) and 'structural_tokens' in struct_tokens:
+                        struct_seq = struct_tokens['structural_tokens']
+                    elif isinstance(struct_tokens, list):
+                        struct_seq = struct_tokens
+                    else:
+                        print(f"Warning: Unexpected structural_tokens format at idx {idx}: {type(struct_tokens)}")
+                        struct_seq = None
 
-                    # Pad or truncate structural tokens to max length
-                    if len(struct_seq) < self.max_seq_len:
-                        padding_length = self.max_seq_len - len(struct_seq)
-                        struct_seq.extend([-100] * padding_length)  # Use -100 as ignore index for padding
+                    if struct_seq is not None:
+                        # Create a copy to avoid modifying the original
+                        struct_seq = list(struct_seq)
 
-                    result['structural_tokens'] = torch.tensor(struct_seq, dtype=torch.long)
+                        # Truncate to max length
+                        if len(struct_seq) > self.max_seq_len:
+                            struct_seq = struct_seq[:self.max_seq_len]
+
+                        # Pad to max length (create new list instead of extending)
+                        if len(struct_seq) < self.max_seq_len:
+                            padding_length = self.max_seq_len - len(struct_seq)
+                            struct_seq = struct_seq + ([-100] * padding_length)
+
+                        result['structural_tokens'] = torch.tensor(struct_seq, dtype=torch.long)
+                else:
+                    print(f"Warning: idx {idx} out of range for structural_tokens (len={len(self.structural_tokens)})")
             except (IndexError, KeyError, TypeError) as e:
-                # Skip structural tokens for this sample if there's any issue
-                pass
+                print(f"Warning: Failed to load structural tokens for idx {idx}: {e}")
+                # Continue without structural tokens for this sample
 
         return result
 
@@ -488,26 +501,39 @@ class EfficientProteinDataset(Dataset):
             result['precomputed_embeddings'] = torch.tensor(embeddings, dtype=torch.float32)
 
         # Add structural tokens if available
-        # Use try-except to handle missing structural tokens gracefully
         if self.include_structural_tokens:
             try:
                 if idx < len(self.structural_tokens):
                     struct_tokens = self.structural_tokens[idx]
-                    struct_seq = struct_tokens['structural_tokens']  # Assuming it's in the same format
 
-                    # Truncate structural tokens to match sequence length
-                    if len(struct_seq) > self.max_seq_len:
-                        struct_seq = struct_seq[:self.max_seq_len]
+                    # Handle both dict format (with 'structural_tokens' key) and direct list
+                    if isinstance(struct_tokens, dict) and 'structural_tokens' in struct_tokens:
+                        struct_seq = struct_tokens['structural_tokens']
+                    elif isinstance(struct_tokens, list):
+                        struct_seq = struct_tokens
+                    else:
+                        print(f"Warning: Unexpected structural_tokens format at idx {idx}: {type(struct_tokens)}")
+                        struct_seq = None
 
-                    # Pad or truncate structural tokens to max length
-                    if len(struct_seq) < self.max_seq_len:
-                        padding_length = self.max_seq_len - len(struct_seq)
-                        struct_seq.extend([-100] * padding_length)  # Use -100 as ignore index for padding
+                    if struct_seq is not None:
+                        # Create a copy to avoid modifying the original
+                        struct_seq = list(struct_seq)
 
-                    result['structural_tokens'] = torch.tensor(struct_seq, dtype=torch.long)
+                        # Truncate to max length
+                        if len(struct_seq) > self.max_seq_len:
+                            struct_seq = struct_seq[:self.max_seq_len]
+
+                        # Pad to max length (create new list instead of extending)
+                        if len(struct_seq) < self.max_seq_len:
+                            padding_length = self.max_seq_len - len(struct_seq)
+                            struct_seq = struct_seq + ([-100] * padding_length)
+
+                        result['structural_tokens'] = torch.tensor(struct_seq, dtype=torch.long)
+                else:
+                    print(f"Warning: idx {idx} out of range for structural_tokens (len={len(self.structural_tokens)})")
             except (IndexError, KeyError, TypeError) as e:
-                # Skip structural tokens for this sample if there's any issue
-                pass
+                print(f"Warning: Failed to load structural tokens for idx {idx}: {e}")
+                # Continue without structural tokens for this sample
 
         return result
 
