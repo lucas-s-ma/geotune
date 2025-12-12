@@ -133,8 +133,8 @@ class EmbeddingCache:
         cache_path = self._get_cache_path(protein_id)
 
         try:
-            # Convert to numpy for storage
-            embedding_np = embedding.cpu().numpy()
+            # Convert to numpy for storage (create a clean copy to avoid pickle issues)
+            embedding_np = np.array(embedding.cpu().numpy(), copy=True, dtype=np.float32)
 
             cache_data = {
                 'protein_id': protein_id,
