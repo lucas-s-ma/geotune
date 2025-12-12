@@ -200,9 +200,13 @@ class GearNetFromCoordinates(nn.Module):
         }
 
         # Attempt to create the model, handling different API versions
+        model_created = False
         try:
             self.gearnet_model = GeometryAwareRelationalGraphNeuralNetwork(**gearnet_kwargs)
-        except TypeError:
+            print(f"✓ Created GearNet with kwargs: {gearnet_kwargs}")
+            model_created = True
+        except TypeError as e:
+            print(f"✗ Failed with kwargs: {e}")
             # If some parameters are not accepted, try with minimal parameters
             # Different versions of TorchDrug may have different parameter names
             try:
@@ -216,13 +220,22 @@ class GearNetFromCoordinates(nn.Module):
                     'concat_hidden': False
                 }
                 self.gearnet_model = GeometryAwareRelationalGraphNeuralNetwork(**gearnet_kwargs_alt)
-            except TypeError:
+                print(f"✓ Created GearNet with alt kwargs: {gearnet_kwargs_alt}")
+                model_created = True
+            except TypeError as e2:
+                print(f"✗ Failed with alt kwargs: {e2}")
                 # Try with minimal required parameters only
                 self.gearnet_model = GeometryAwareRelationalGraphNeuralNetwork(
                     input_dim=3,
                     hidden_dim=hidden_dim,
                     num_relation=7
                 )
+                print(f"✓ Created GearNet with minimal kwargs")
+                model_created = True
+
+        # Print model info
+        total_params = sum(p.numel() for p in self.gearnet_model.parameters())
+        print(f"  GearNet total parameters: {total_params:,}")
 
         if freeze:
             for param in self.parameters():
@@ -307,6 +320,7 @@ class GearNetFromCoordinates(nn.Module):
             graph = data.Graph(
                 edge_list=edge_list_tensor,
                 num_node=seq_len,
+                num_relation=7,  # IMPORTANT: Must match GearNet model's num_relation
                 node_feature=node_pos  # Use CA coordinates as node features directly
             )
             graphs.append(graph)
@@ -327,9 +341,28 @@ class GearNetFromCoordinates(nn.Module):
 
         # Pass through GearNet model in float32 mode
         print(f"  [GEARNET DEBUG] Starting GearNet model forward pass...")
+        print(f"  [GEARNET DEBUG] Graph has {batched_graph.num_node} nodes, {batched_graph.num_edge} edges, {batched_graph.num_relation} relations")
+        print(f"  [GEARNET DEBUG] Node features shape: {batched_graph.node_feature.shape}")
+
+        # Force CUDA synchronization before forward pass
+        if device.type == 'cuda':
+            torch.cuda.synchronize()
+            print(f"  [GEARNET DEBUG] CUDA synchronized")
+
         model_start = time.time()
-        with torch.amp.autocast('cuda', enabled=False):  # Disable autocast for this forward pass
-            output = self.gearnet_model(batched_graph, batched_graph.node_feature)
+        try:
+            with torch.amp.autocast('cuda', enabled=False):  # Disable autocast for this forward pass
+                print(f"  [GEARNET DEBUG] Calling gearnet_model.forward()...")
+                output = self.gearnet_model(batched_graph, batched_graph.node_feature)
+                print(f"  [GEARNET DEBUG] gearnet_model.forward() returned")
+        except Exception as e:
+            print(f"  [GEARNET DEBUG] ERROR in model forward: {type(e).__name__}: {e}")
+            raise
+
+        # Force CUDA synchronization after forward pass
+        if device.type == 'cuda':
+            torch.cuda.synchronize()
+
         print(f"  [GEARNET DEBUG] Model forward pass took {time.time() - model_start:.3f}s")
 
         # output["node_feature"] is (total_num_residues, hidden_dim)
