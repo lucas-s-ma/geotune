@@ -4,7 +4,7 @@
 model:
   model_name: "facebook/esm2_t6_8M_UR50D"  # Base ESM2 model (8M parameters)
   # Other options: facebook/esm2_t12_35M_UR50D, facebook/esm2_t30_150M_UR50D, facebook/esm2_t33_650M_UR50D
-  constraint_weight: 0.1  # Weight for geometric constraint loss
+  constraint_weight: 5.0  # Weight for geometric constraint loss (increased from 0.1 to balance with other losses)
   dist_threshold: 15.0    # Distance threshold for constraints (Angstroms)
 
 # LoRA configuration
@@ -26,11 +26,11 @@ training:
   gradient_accumulation_steps: 4  # Accumulate gradients (effective batch_size = 2*4 = 8)
   learning_rate: 1e-3     # Learning rate (used if primal_lr and dual_lr not specified)
   primal_lr: 1e-3         # Learning rate for primal task (ESM model + MLM head)
-  dual_lr: 5e-4           # Learning rate for dual task (structure alignment loss module)
+  dual_lr: 5e-2           # Learning rate for dual task (structure alignment loss module)
   num_epochs: 10          # Number of epochs
   warmup_steps: 100       # Warmup steps for scheduler
   max_seq_len: 512        # Maximum sequence length - reduced for memory
-  seed: 42                # Random seed
+  seed: 1644                # Random seed
   output_dir: "outputs"   # Output directory
   use_gradient_checkpointing: true  # Enable gradient checkpointing to save memory
   mixed_precision: true   # Use fp16 mixed precision training
