@@ -61,6 +61,81 @@ The LoRA adapters can be saved during or after training using the `save_lora_ada
 model.save_lora_adapters("path/to/save/lora_adapters")
 ```
 
+## Switching Between ESM2 Models
+
+### Important: Embedding Dimension Compatibility
+
+**When switching between different ESM2 models, you MUST be aware of dimension mismatches with pre-computed GearNet embeddings.**
+
+Different ESM2 models have different hidden dimensions:
+- **ESM2-8M** (`facebook/esm2_t6_8M_UR50D`): `hidden_size = 320`
+- **ESM2-35M** (`facebook/esm2_t12_35M_UR50D`): `hidden_size = 480`
+- **ESM2-150M** (`facebook/esm2_t30_150M_UR50D`): `hidden_size = 640`
+- **ESM2-650M** (`facebook/esm2_t33_650M_UR50D`): `hidden_size = 1280`
+
+The GearNet embeddings are initialized to match the ESM2 model's `hidden_size`. This means:
+
+1. **Pre-computed embeddings are dimension-specific**: Embeddings computed for ESM2-150M (dim=640) cannot be used with ESM2-8M (dim=320)
+2. **The code detects mismatches automatically**: The training script (train.py:485-516) checks embedding dimensions and falls back to on-the-fly generation if there's a mismatch
+3. **You have two options when switching models**:
+   - **Option A (Recommended)**: Regenerate GearNet embeddings with the new dimension
+   - **Option B**: Let the code generate embeddings on-the-fly (slower but works)
+
+### How to Switch to a Different ESM2 Model
+
+#### Step 1: Update the config file
+
+Edit `configs/config.yaml`:
+
+```yaml
+model:
+  model_name: "facebook/esm2_t6_8M_UR50D"  # Change to desired model
+
+data_pipeline:
+  embedding_dim: 320  # Update to match: 8M=320, 35M=480, 150M=640, 650M=1280
+```
+
+#### Step 2: Regenerate GearNet embeddings (Recommended)
+
+If you have pre-computed embeddings from a different ESM2 model, regenerate them:
+
+```bash
+python data_pipeline/generate_gearnet_embeddings.py \
+    --processed_dataset_path data/processed \
+    --output_dir data/processed/embeddings_esm2_8m \
+    --hidden_dim 320
+```
+
+Then update your config to point to the new embeddings directory:
+
+```yaml
+data:
+  data_path: "data/processed_esm2_8m"
+```
+
+#### Step 3: Train with the new model
+
+```bash
+python scripts/train.py --config configs/config.yaml --data_path data/processed
+```
+
+The training script will automatically:
+- Detect if pre-computed embeddings match the current ESM2 model's dimension
+- Use pre-computed embeddings if dimensions match
+- Generate embeddings on-the-fly if dimensions don't match
+
+## Primal and Dual Learning Rates
+
+GeoTune supports separate learning rates for the **primal task** (ESM model + MLM) and **dual task** (structure alignment):
+
+```yaml
+training:
+  primal_lr: 1e-3  # Learning rate for ESM model and MLM head
+  dual_lr: 5e-4    # Learning rate for structure alignment loss module
+```
+
+If `primal_lr` and `dual_lr` are not specified, the single `learning_rate` parameter will be used for all parameters.
+
 ## Requirements
 
 - Python 3.8+

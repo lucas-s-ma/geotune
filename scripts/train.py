@@ -555,13 +555,46 @@ def main():
         num_workers=1
     )
 
-    # Setup optimizer
-    optimizer = torch.optim.AdamW(
-        filter(lambda p: p.requires_grad, model.parameters()),  # Only optimize trainable params
-        lr=config.training.learning_rate,
-        weight_decay=0.01,
-        betas=(0.9, 0.98)  # Standard AdamW values
-    )
+    # Setup optimizer with separate learning rates for primal and dual tasks
+    # Primal task: ESM model (LoRA params) + LM head + dihedral constraints
+    # Dual task: Structure alignment loss module (projection layers + prediction head)
+
+    # Check if primal_lr and dual_lr are specified in config
+    use_separate_lr = hasattr(config.training, 'primal_lr') and hasattr(config.training, 'dual_lr')
+
+    if use_separate_lr:
+        print(f"Using separate learning rates: primal_lr={config.training.primal_lr}, dual_lr={config.training.dual_lr}")
+
+        # Primal parameters: ESM model + LM head + dihedral constraints
+        primal_params = [
+            {'params': [p for n, p in model.named_parameters() if p.requires_grad], 'lr': config.training.primal_lr},
+        ]
+
+        # Dual parameters: Structure alignment loss module
+        dual_params = [
+            {'params': [p for p in structure_alignment_loss.parameters() if p.requires_grad], 'lr': config.training.dual_lr}
+        ]
+
+        # Combine parameter groups
+        param_groups = primal_params + dual_params
+
+        optimizer = torch.optim.AdamW(
+            param_groups,
+            weight_decay=0.01,
+            betas=(0.9, 0.98)
+        )
+    else:
+        # Use single learning rate for all parameters
+        print(f"Using single learning rate: {config.training.learning_rate}")
+        all_params = list(filter(lambda p: p.requires_grad, model.parameters())) + \
+                     list(filter(lambda p: p.requires_grad, structure_alignment_loss.parameters()))
+
+        optimizer = torch.optim.AdamW(
+            all_params,
+            lr=config.training.learning_rate,
+            weight_decay=0.01,
+            betas=(0.9, 0.98)
+        )
 
     # Setup scheduler
     # Adjust total steps for gradient accumulation
