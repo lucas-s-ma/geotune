@@ -255,20 +255,42 @@ class PretrainedGNNWrapper(nn.Module):
     Wrapper for a frozen, pre-trained protein Graph Neural Network (e.g. GearNet)
     This module is frozen during training to provide structural embeddings
     Can load from local path or HuggingFace hub if available
+
+    NOTE: As of 2025-12-12, TorchDrug GearNet hangs indefinitely (see TORCHDRUG_ISSUE.md).
+    Using simple_structural_encoder as workaround. To fix later:
+    1. Diagnose TorchDrug/PyTorch version compatibility
+    2. Set use_simple_encoder=False to re-enable GearNet
+    3. See TORCHDRUG_ISSUE.md for detailed troubleshooting steps
     """
-    def __init__(self, hidden_dim=512):
+    def __init__(self, hidden_dim=512, use_simple_encoder=False):
         """
         Args:
             hidden_dim: Hidden dimension for the model
+            use_simple_encoder: If True, use simple distance-based encoder instead of GearNet
+                               (Currently True by default due to TorchDrug hanging issue)
         """
         super().__init__()
 
-        from models.gearnet_model import create_pretrained_gearnet
-        self.backbone = create_pretrained_gearnet(
-            hidden_dim=hidden_dim,
-            freeze=True  # Always freeze for pre-computation
-        )
-        print("Successfully loaded GearNet implementation from TorchDrug")
+        if use_simple_encoder:
+            print("=" * 80)
+            print("Using simple structural encoder (fallback, not GearNet)")
+            print("Reason: TorchDrug GearNet hanging issue (see TORCHDRUG_ISSUE.md)")
+            print("To switch back to GearNet: set use_simple_encoder=False after fixing TorchDrug")
+            print("=" * 80)
+            from models.simple_structural_encoder import create_simple_structural_encoder
+            self.backbone = create_simple_structural_encoder(
+                hidden_dim=hidden_dim,
+                freeze=True
+            )
+        else:
+            print("Attempting to load GearNet from TorchDrug...")
+            print("WARNING: TorchDrug may hang (see TORCHDRUG_ISSUE.md)")
+            from models.gearnet_model import create_pretrained_gearnet
+            self.backbone = create_pretrained_gearnet(
+                hidden_dim=hidden_dim,
+                freeze=True  # Always freeze for pre-computation
+            )
+            print("Successfully loaded GearNet implementation from TorchDrug")
 
     def forward(self, n_coords, ca_coords, c_coords):
         """

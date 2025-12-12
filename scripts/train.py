@@ -51,7 +51,7 @@ def parse_args():
     return parser.parse_args()
 
 
-def train_epoch(model, dataloader, optimizer, scheduler, dihedral_constraints, device, config, structure_alignment_loss=None, frozen_gnn=None, scaler=None):
+def train_epoch(model, dataloader, optimizer, scheduler, dihedral_constraints, device, config, structure_alignment_loss=None, frozen_gnn=None, scaler=None, embedding_cache=None):
     """Train for one epoch with dihedral angle constraints and structure alignment"""
     model.train()
     total_loss = 0
@@ -144,25 +144,27 @@ def train_epoch(model, dataloader, optimizer, scheduler, dihedral_constraints, d
                 # Get structural tokens
                 structure_tokens = batch['structural_tokens'].to(device)
 
-                # Use pre-computed embeddings if available, otherwise generate using frozen GNN
+                # Use pre-computed embeddings if available, otherwise use embedding cache
                 if has_precomputed_embeddings:
                     pGNN_embeddings = batch['precomputed_embeddings'].to(device)
                 else:
-                    # Generate pGNN embeddings using the frozen GNN (inference only)
-                    # Process one protein at a time since GearNet works best with batch_size=1
-                    with torch.no_grad():
-                        batch_size_gnn = n_coords.shape[0]
-                        pGNN_embeddings_list = []
-                        for i in range(batch_size_gnn):
-                            # Process single protein
-                            single_pGNN = frozen_gnn(
-                                n_coords[i:i+1],
-                                ca_coords[i:i+1],
-                                c_coords[i:i+1]
-                            )
-                            pGNN_embeddings_list.append(single_pGNN)
-                        # Stack results back into batch
-                        pGNN_embeddings = torch.cat(pGNN_embeddings_list, dim=0)
+                    # Generate embeddings using cache (will generate on-the-fly and save for future epochs)
+                    protein_ids = batch['protein_ids']
+                    batch_size_gnn = n_coords.shape[0]
+                    pGNN_embeddings_list = []
+
+                    for i in range(batch_size_gnn):
+                        # Get embedding from cache (generates and caches if not exists)
+                        embedding = embedding_cache.get_embedding(
+                            protein_id=protein_ids[i],
+                            n_coords=n_coords[i],
+                            ca_coords=ca_coords[i],
+                            c_coords=c_coords[i]
+                        )
+                        pGNN_embeddings_list.append(embedding)
+
+                    # Stack results back into batch
+                    pGNN_embeddings = torch.stack(pGNN_embeddings_list, dim=0)
 
                 # Calculate structure alignment loss
                 struct_align_results = structure_alignment_loss(
@@ -275,7 +277,7 @@ def train_epoch(model, dataloader, optimizer, scheduler, dihedral_constraints, d
     return avg_loss, avg_mlm_loss, avg_constraint_loss, avg_struct_align_loss, avg_latent_loss, avg_physical_loss
 
 
-def validate(model, dataloader, dihedral_constraints, device, config, structure_alignment_loss=None, frozen_gnn=None):
+def validate(model, dataloader, dihedral_constraints, device, config, structure_alignment_loss=None, frozen_gnn=None, embedding_cache=None):
     """Validate the model with dihedral angle constraints and structure alignment"""
     model.eval()
     total_loss = 0
@@ -348,26 +350,28 @@ def validate(model, dataloader, dihedral_constraints, device, config, structure_
                 # Get structural tokens
                 structure_tokens = batch['structural_tokens'].to(device)
 
-                # Use pre-computed embeddings if available, otherwise generate using frozen GNN
+                # Use pre-computed embeddings if available, otherwise use embedding cache
                 if has_precomputed_embeddings:
                     # Use pre-computed embeddings
                     pGNN_embeddings = batch['precomputed_embeddings'].to(device)
                 else:
-                    # Generate pGNN embeddings using the frozen GNN (inference only)
-                    # Process one protein at a time since GearNet works best with batch_size=1
-                    with torch.no_grad():
-                        batch_size_gnn = n_coords.shape[0]
-                        pGNN_embeddings_list = []
-                        for i in range(batch_size_gnn):
-                            # Process single protein
-                            single_pGNN = frozen_gnn(
-                                n_coords[i:i+1],
-                                ca_coords[i:i+1],
-                                c_coords[i:i+1]
-                            )
-                            pGNN_embeddings_list.append(single_pGNN)
-                        # Stack results back into batch
-                        pGNN_embeddings = torch.cat(pGNN_embeddings_list, dim=0)
+                    # Generate embeddings using cache (will load from cache or generate if needed)
+                    protein_ids = batch['protein_ids']
+                    batch_size_gnn = n_coords.shape[0]
+                    pGNN_embeddings_list = []
+
+                    for i in range(batch_size_gnn):
+                        # Get embedding from cache
+                        embedding = embedding_cache.get_embedding(
+                            protein_id=protein_ids[i],
+                            n_coords=n_coords[i],
+                            ca_coords=ca_coords[i],
+                            c_coords=c_coords[i]
+                        )
+                        pGNN_embeddings_list.append(embedding)
+
+                    # Stack results back into batch
+                    pGNN_embeddings = torch.stack(pGNN_embeddings_list, dim=0)
 
                 # Get pLM embeddings
                 pLM_embeddings = masked_outputs['sequence_output']
@@ -523,7 +527,8 @@ def main():
     use_structure_alignment = getattr(config.constraints, 'use_structure_alignment', True)
 
     if use_structure_alignment:
-        print("Structure alignment loss ENABLED - will use GearNet embeddings")
+        print("Structure alignment loss ENABLED - will use structural embeddings")
+
         structure_alignment_loss = StructureAlignmentLoss(
             hidden_dim=esm_hidden_size,
             num_structural_classes=21,  # 21 structural classes for Foldseek (20 + 'X')
@@ -532,15 +537,30 @@ def main():
             physical_weight=0.5
         ).to(device)
 
-        # Initialize frozen pre-trained GNN (e.g. GearNet)
+        # Initialize frozen pre-trained GNN (e.g. GearNet or SimpleStructuralEncoder)
+        # NOTE: Using simple encoder due to TorchDrug issue - see TORCHDRUG_ISSUE.md
         frozen_gnn = PretrainedGNNWrapper(
-            hidden_dim=esm_hidden_size
+            hidden_dim=esm_hidden_size,
+            use_simple_encoder=True  # Using simple encoder (faster, more reliable)
         ).to(device)
         frozen_gnn.eval()  # Set to evaluation mode to ensure no gradients
+
+        # Initialize embedding cache for on-the-fly generation and storage
+        from utils.embedding_cache import EmbeddingCache
+        cache_dir = os.path.join(config.training.output_dir, "embedding_cache")
+        embedding_cache = EmbeddingCache(
+            cache_dir=cache_dir,
+            gnn_model=frozen_gnn,
+            device=device,
+            verbose=True
+        )
+        print(f"Embedding cache initialized at: {cache_dir}")
+        print("Embeddings will be generated on-the-fly and cached for future epochs")
     else:
         print("Structure alignment loss DISABLED - training with MLM + dihedral constraints only")
         structure_alignment_loss = None
         frozen_gnn = None
+        embedding_cache = None
 
     # Load dataset
     print("Loading dataset...")
@@ -713,13 +733,15 @@ def main():
         # Train
         train_loss, train_mlm_loss, train_constraint_loss, train_struct_align_loss, train_latent_loss, train_physical_loss = train_epoch(
             model, train_loader, optimizer, scheduler, dihedral_constraints, device, config,
-            structure_alignment_loss=structure_alignment_loss, frozen_gnn=frozen_gnn, scaler=scaler
+            structure_alignment_loss=structure_alignment_loss, frozen_gnn=frozen_gnn, scaler=scaler,
+            embedding_cache=embedding_cache
         )
 
         # Validate
         val_loss, val_mlm_loss, val_constraint_loss, val_struct_align_loss, val_latent_loss, val_physical_loss = validate(
             model, val_loader, dihedral_constraints, device, config,
-            structure_alignment_loss=structure_alignment_loss, frozen_gnn=frozen_gnn
+            structure_alignment_loss=structure_alignment_loss, frozen_gnn=frozen_gnn,
+            embedding_cache=embedding_cache
         )
 
         # Log metrics
@@ -756,6 +778,10 @@ def main():
     final_dir = os.path.join(config.training.output_dir, "final_model")
     os.makedirs(final_dir, exist_ok=True)
     model.save_lora_adapters(os.path.join(final_dir, "lora_adapters"))
+
+    # Print embedding cache statistics if used
+    if embedding_cache is not None:
+        embedding_cache.print_statistics()
 
     print("Training completed!")
     if config.logging.use_wandb:

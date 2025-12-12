@@ -156,8 +156,25 @@ def generate_gearnet_embeddings_for_dataset(processed_dataset_path, output_dir, 
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     print(f"Using device: {device}")
 
+    # ============================================================================
+    # IMPORTANT: TorchDrug GearNet Hanging Issue (2025-12-12)
+    # ============================================================================
+    # TorchDrug's GeometryAwareRelationalGraphNeuralNetwork hangs indefinitely
+    # during forward pass (even on CPU, even with 10-node graphs).
+    #
+    # WORKAROUND: Using simple_structural_encoder instead (see models/simple_structural_encoder.py)
+    # - Faster: ~0.1-0.5s per protein vs 1s+ for GearNet
+    # - Reliable: No hanging issues
+    # - Still captures structural info via k-NN distances + coordinates
+    #
+    # TO FIX LATER: See TORCHDRUG_ISSUE.md for detailed troubleshooting
+    # TO RE-ENABLE GEARNET: Set use_simple = False (after fixing TorchDrug)
+    # ============================================================================
+    use_simple = True  # CURRENT: Using simple encoder due to TorchDrug issue
+
     model = PretrainedGNNWrapper(
         hidden_dim=hidden_dim,
+        use_simple_encoder=use_simple
     ).to(device)
 
     model.eval()  # Set to evaluation mode
