@@ -229,6 +229,74 @@ def validate(model, dataloader, dihedral_module, alignment_module, gnn_module, d
         total_foldseek_loss / num_batches
     )
 
+def log_lambda_distributions(lagrangian_module, epoch, config):
+    """
+    Create and log histograms of lambda distributions during training.
+
+    Args:
+        lagrangian_module: MultiConstraintLagrangian instance with lambda values
+        epoch: Current epoch number
+        config: Config object for logging settings
+    """
+    if not config.logging.use_wandb:
+        return
+
+    # Get lambda values
+    lam_dihedral = lagrangian_module.lam_dihedral.cpu().numpy()
+    lam_gnn = lagrangian_module.lam_gnn.cpu().numpy()
+    lam_foldseek = lagrangian_module.lam_foldseek.cpu().numpy()
+
+    # Create figure with 3 subplots
+    fig, axs = plt.subplots(1, 3, figsize=(18, 5), tight_layout=True)
+
+    # Dihedral lambdas
+    axs[0].hist(lam_dihedral, bins=50, color='blue', alpha=0.7, edgecolor='black')
+    axs[0].set_title(f'Dihedral Lambdas (Epoch {epoch})')
+    axs[0].axvline(lam_dihedral.mean(), color='red', linestyle='--', linewidth=2, label=f'Mean: {lam_dihedral.mean():.4f}')
+    axs[0].axvline(np.median(lam_dihedral), color='green', linestyle='--', linewidth=2, label=f'Median: {np.median(lam_dihedral):.4f}')
+    axs[0].legend()
+
+    # GNN lambdas
+    axs[1].hist(lam_gnn, bins=50, color='green', alpha=0.7, edgecolor='black')
+    axs[1].set_title(f'GNN Lambdas (Epoch {epoch})')
+    axs[1].axvline(lam_gnn.mean(), color='red', linestyle='--', linewidth=2, label=f'Mean: {lam_gnn.mean():.4f}')
+    axs[1].axvline(np.median(lam_gnn), color='blue', linestyle='--', linewidth=2, label=f'Median: {np.median(lam_gnn):.4f}')
+    axs[1].legend()
+
+    # Foldseek lambdas
+    axs[2].hist(lam_foldseek, bins=50, color='red', alpha=0.7, edgecolor='black')
+    axs[2].set_title(f'Foldseek Lambdas (Epoch {epoch})')
+    axs[2].axvline(lam_foldseek.mean(), color='blue', linestyle='--', linewidth=2, label=f'Mean: {lam_foldseek.mean():.4f}')
+    axs[2].axvline(np.median(lam_foldseek), color='green', linestyle='--', linewidth=2, label=f'Median: {np.median(lam_foldseek):.4f}')
+    axs[2].legend()
+
+    # Set labels for all subplots
+    for ax in axs:
+        ax.set_xlabel('Lambda Value')
+        ax.set_ylabel('Frequency')
+        ax.grid(True, alpha=0.3)
+
+    # Log to wandb
+    wandb.log({f"lambda_distributions/epoch_{epoch}": wandb.Image(fig)})
+    plt.close(fig)
+
+    # Also log statistics as scalars
+    wandb.log({
+        f'lambda_stats/dihedral_mean': lam_dihedral.mean(),
+        f'lambda_stats/dihedral_std': lam_dihedral.std(),
+        f'lambda_stats/dihedral_median': np.median(lam_dihedral),
+        f'lambda_stats/dihedral_max': lam_dihedral.max(),
+        f'lambda_stats/gnn_mean': lam_gnn.mean(),
+        f'lambda_stats/gnn_std': lam_gnn.std(),
+        f'lambda_stats/gnn_median': np.median(lam_gnn),
+        f'lambda_stats/gnn_max': lam_gnn.max(),
+        f'lambda_stats/foldseek_mean': lam_foldseek.mean(),
+        f'lambda_stats/foldseek_std': lam_foldseek.std(),
+        f'lambda_stats/foldseek_median': np.median(lam_foldseek),
+        f'lambda_stats/foldseek_max': lam_foldseek.max(),
+        'epoch': epoch
+    })
+
 def main():
     """Main function to set up and run the constrained training process."""
     args = parse_args()
@@ -268,7 +336,7 @@ def main():
         constraint_weight=config.model.constraint_weight
     ).to(device)
     alignment_module = StructureAlignmentLoss(hidden_dim=esm_hidden_size, num_structural_classes=21).to(device)
-    gnn_module = PretrainedGNNWrapper(hidden_dim=esm_hidden_size).to(device).eval()
+    gnn_module = PretrainedGNNWrapper(hidden_dim=esm_hidden_size, use_simple_encoder=True).to(device).eval()
 
     # --- Data ---
     esm_hidden_size = model.config.hidden_size
@@ -343,6 +411,12 @@ def main():
         print(f"Epoch {epoch+1} Summary:")
         print(f"  Train | Lagrangian: {train_lagrangian:.4f}, MLM: {train_mlm:.4f}, Dihedral: {train_dihedral:.4f}, GNN: {train_gnn:.4f}, Foldseek: {train_foldseek:.4f}")
         print(f"  Val   | MLM: {val_mlm:.4f}, Dihedral: {val_dihedral:.4f}, GNN: {val_gnn:.4f}, Foldseek: {val_foldseek:.4f}")
+
+        # Log lambda distributions periodically
+        lambda_log_frequency = getattr(config.logging, 'lambda_log_frequency', 1)  # Default: log every epoch
+        if (epoch + 1) % lambda_log_frequency == 0:
+            log_lambda_distributions(lagrangian_module, epoch + 1, config)
+            print(f"  Lambda distributions logged for epoch {epoch+1}")
 
     # --- Final Actions ---
     final_dir = os.path.join(config.training.output_dir, "final_model")

@@ -54,6 +54,7 @@ evaluation:
 logging:
   use_wandb: true         # Whether to use Weights & Biases
   project_name: "geotune_online"  # W&B project name
+  lambda_log_frequency: 5 # Log lambda distributions every N epochs (default: 1 = every epoch)
   
 # Constraint configuration
 constraints:
