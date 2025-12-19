@@ -15,6 +15,8 @@ from tqdm import tqdm
 import wandb
 import argparse
 from omegaconf import OmegaConf
+import matplotlib
+matplotlib.use('Agg')  # Set backend before importing pyplot (required for HPC)
 import matplotlib.pyplot as plt
 import pickle
 import numpy as np
@@ -246,28 +248,44 @@ def log_lambda_distributions(lagrangian_module, epoch, config):
     lam_gnn = lagrangian_module.lam_gnn.cpu().numpy()
     lam_foldseek = lagrangian_module.lam_foldseek.cpu().numpy()
 
+    # Compute statistics (convert to float to avoid numpy compatibility issues)
+    dih_mean = float(lam_dihedral.mean())
+    dih_median = float(np.median(lam_dihedral))
+    dih_std = float(lam_dihedral.std())
+    dih_max = float(lam_dihedral.max())
+
+    gnn_mean = float(lam_gnn.mean())
+    gnn_median = float(np.median(lam_gnn))
+    gnn_std = float(lam_gnn.std())
+    gnn_max = float(lam_gnn.max())
+
+    fs_mean = float(lam_foldseek.mean())
+    fs_median = float(np.median(lam_foldseek))
+    fs_std = float(lam_foldseek.std())
+    fs_max = float(lam_foldseek.max())
+
     # Create figure with 3 subplots
     fig, axs = plt.subplots(1, 3, figsize=(18, 5), tight_layout=True)
 
     # Dihedral lambdas
     axs[0].hist(lam_dihedral, bins=50, color='blue', alpha=0.7, edgecolor='black')
     axs[0].set_title(f'Dihedral Lambdas (Epoch {epoch})')
-    axs[0].axvline(lam_dihedral.mean(), color='red', linestyle='--', linewidth=2, label=f'Mean: {lam_dihedral.mean():.4f}')
-    axs[0].axvline(np.median(lam_dihedral), color='green', linestyle='--', linewidth=2, label=f'Median: {np.median(lam_dihedral):.4f}')
+    axs[0].axvline(dih_mean, color='red', linestyle='--', linewidth=2, label=f'Mean: {dih_mean:.4f}')
+    axs[0].axvline(dih_median, color='green', linestyle='--', linewidth=2, label=f'Median: {dih_median:.4f}')
     axs[0].legend()
 
     # GNN lambdas
     axs[1].hist(lam_gnn, bins=50, color='green', alpha=0.7, edgecolor='black')
     axs[1].set_title(f'GNN Lambdas (Epoch {epoch})')
-    axs[1].axvline(lam_gnn.mean(), color='red', linestyle='--', linewidth=2, label=f'Mean: {lam_gnn.mean():.4f}')
-    axs[1].axvline(np.median(lam_gnn), color='blue', linestyle='--', linewidth=2, label=f'Median: {np.median(lam_gnn):.4f}')
+    axs[1].axvline(gnn_mean, color='red', linestyle='--', linewidth=2, label=f'Mean: {gnn_mean:.4f}')
+    axs[1].axvline(gnn_median, color='blue', linestyle='--', linewidth=2, label=f'Median: {gnn_median:.4f}')
     axs[1].legend()
 
     # Foldseek lambdas
     axs[2].hist(lam_foldseek, bins=50, color='red', alpha=0.7, edgecolor='black')
     axs[2].set_title(f'Foldseek Lambdas (Epoch {epoch})')
-    axs[2].axvline(lam_foldseek.mean(), color='blue', linestyle='--', linewidth=2, label=f'Mean: {lam_foldseek.mean():.4f}')
-    axs[2].axvline(np.median(lam_foldseek), color='green', linestyle='--', linewidth=2, label=f'Median: {np.median(lam_foldseek):.4f}')
+    axs[2].axvline(fs_mean, color='blue', linestyle='--', linewidth=2, label=f'Mean: {fs_mean:.4f}')
+    axs[2].axvline(fs_median, color='green', linestyle='--', linewidth=2, label=f'Median: {fs_median:.4f}')
     axs[2].legend()
 
     # Set labels for all subplots
@@ -282,18 +300,18 @@ def log_lambda_distributions(lagrangian_module, epoch, config):
 
     # Also log statistics as scalars
     wandb.log({
-        f'lambda_stats/dihedral_mean': lam_dihedral.mean(),
-        f'lambda_stats/dihedral_std': lam_dihedral.std(),
-        f'lambda_stats/dihedral_median': np.median(lam_dihedral),
-        f'lambda_stats/dihedral_max': lam_dihedral.max(),
-        f'lambda_stats/gnn_mean': lam_gnn.mean(),
-        f'lambda_stats/gnn_std': lam_gnn.std(),
-        f'lambda_stats/gnn_median': np.median(lam_gnn),
-        f'lambda_stats/gnn_max': lam_gnn.max(),
-        f'lambda_stats/foldseek_mean': lam_foldseek.mean(),
-        f'lambda_stats/foldseek_std': lam_foldseek.std(),
-        f'lambda_stats/foldseek_median': np.median(lam_foldseek),
-        f'lambda_stats/foldseek_max': lam_foldseek.max(),
+        f'lambda_stats/dihedral_mean': dih_mean,
+        f'lambda_stats/dihedral_std': dih_std,
+        f'lambda_stats/dihedral_median': dih_median,
+        f'lambda_stats/dihedral_max': dih_max,
+        f'lambda_stats/gnn_mean': gnn_mean,
+        f'lambda_stats/gnn_std': gnn_std,
+        f'lambda_stats/gnn_median': gnn_median,
+        f'lambda_stats/gnn_max': gnn_max,
+        f'lambda_stats/foldseek_mean': fs_mean,
+        f'lambda_stats/foldseek_std': fs_std,
+        f'lambda_stats/foldseek_median': fs_median,
+        f'lambda_stats/foldseek_max': fs_max,
         'epoch': epoch
     })
 
