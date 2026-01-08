@@ -6,7 +6,7 @@ peft==0.6.2
 bitsandbytes==0.41.1  # for 4-bit quantization (optional)
 datasets==2.14.6
 accelerate==0.24.1
-numpy>=1.21.0,<1.27.0
+numpy>=1.21.0,<2.0.0
 biopython==1.81
 pandas==2.1.3
 scipy>=1.7.0,<1.12.0

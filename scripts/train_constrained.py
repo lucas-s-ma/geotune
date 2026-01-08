@@ -344,7 +344,8 @@ def main():
         wandb.init(project=config.logging.project_name, config=OmegaConf.to_container(config))
 
     # --- Model and Modules ---
-    lora_params = {"r": config.lora.r, "lora_alpha": config.lora.alpha, "lora_dropout": config.lora.dropout, "target_modules": config.lora.target_modules}
+    # Convert OmegaConf objects to primitive Python types to avoid JSON serialization issues
+    lora_params = {"r": config.lora.r, "lora_alpha": config.lora.alpha, "lora_dropout": config.lora.dropout, "target_modules": list(config.lora.target_modules)}
     model, _ = load_esm_with_lora(config.model.model_name, lora_params)
     model.to(device)
     esm_hidden_size = model.config.hidden_size
@@ -435,6 +436,17 @@ def main():
         if (epoch + 1) % lambda_log_frequency == 0:
             log_lambda_distributions(lagrangian_module, epoch + 1, config)
             print(f"  Lambda distributions logged for epoch {epoch+1}")
+
+        # Save periodic checkpoints to test saving and provide backup
+        checkpoint_frequency = getattr(config.training, 'checkpoint_frequency', 2)  # Default: save every 2 epochs
+        if (epoch + 1) % checkpoint_frequency == 0:
+            checkpoint_dir = os.path.join(config.training.output_dir, f"checkpoint_epoch_{epoch+1}")
+            os.makedirs(checkpoint_dir, exist_ok=True)
+            try:
+                model.save_lora_adapters(os.path.join(checkpoint_dir, "lora_adapters"))
+                print(f"  Checkpoint saved to {checkpoint_dir}")
+            except Exception as e:
+                print(f"  Failed to save checkpoint: {e}")
 
     # --- Final Actions ---
     final_dir = os.path.join(config.training.output_dir, "final_model")
