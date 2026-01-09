@@ -264,18 +264,14 @@ class MultiConstraintLagrangian(nn.Module):
             foldseek_violations = foldseek_losses.detach() - self.foldseek_epsilon
 
             # Update dihedral multipliers for the samples in the batch
-            self.lam_dihedral[indices] += self.dual_lr * dihedral_violations
-            self.lam_dihedral[indices].clamp_(min=0.0)
+            # Use assignment with clamp to ensure non-negative values are properly set
+            self.lam_dihedral[indices] = (self.lam_dihedral[indices] + self.dual_lr * dihedral_violations).clamp(min=0.0)
 
             # Update GNN multipliers
-            self.lam_gnn[indices] += self.dual_lr * gnn_violations
-            
-            # Note: clam should clamp to 0 $$$$$$$$$$$$$$$$$$$$$$$$$$ $$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$
-            self.lam_gnn[indices].data.clamp_(min=0.0)
+            self.lam_gnn[indices] = (self.lam_gnn[indices] + self.dual_lr * gnn_violations).clamp(min=0.0)
 
             # Update foldseek multipliers
-            self.lam_foldseek[indices] += self.dual_lr * foldseek_violations
-            self.lam_foldseek[indices].clamp_(min=0.0)
+            self.lam_foldseek[indices] = (self.lam_foldseek[indices] + self.dual_lr * foldseek_violations).clamp(min=0.0)
 
     def get_average_lambdas(self):
         """Get the average lambda values over the entire dataset."""
