@@ -207,9 +207,22 @@ def validate(model, dataloader, dihedral_module, alignment_module, gnn_module, d
             seq_logits = model.lm_head(pLM_embeddings)
             total_mlm_loss += nn.CrossEntropyLoss(ignore_index=-100)(seq_logits.view(-1, seq_logits.size(-1)), labels.view(-1)).item()
 
-            # Dihedral Loss
-            dihedral_results = dihedral_module(pLM_embeddings, n_coords, ca_coords, c_coords, attention_mask)
-            total_dihedral_loss += dihedral_results['dihedral_loss'].item()
+            # Dihedral Loss - compute per-sample losses to match training
+            cos_true_phi, cos_true_psi = compute_dihedral_angles_from_coordinates(n_coords, ca_coords, c_coords)
+            cos_pred_phi, cos_pred_psi = dihedral_module.predict_dihedral_angles(pLM_embeddings)
+
+            min_len_phi = min(cos_true_phi.shape[1], cos_pred_phi.shape[1])
+            phi_mask = attention_mask[:, 1:1+min_len_phi].float()
+            phi_loss_sq = (cos_true_phi[:, :min_len_phi] - cos_pred_phi[:, :min_len_phi])**2
+            phi_loss_per_sample = (phi_loss_sq * phi_mask).sum(dim=1) / phi_mask.sum(dim=1).clamp(min=1.0)
+
+            min_len_psi = min(cos_true_psi.shape[1], cos_pred_psi.shape[1])
+            psi_mask = attention_mask[:, :min_len_psi].float()
+            psi_loss_sq = (cos_true_psi[:, :min_len_psi] - cos_pred_psi[:, :min_len_psi])**2
+            psi_loss_per_sample = (psi_loss_sq * psi_mask).sum(dim=1) / psi_mask.sum(dim=1).clamp(min=1.0)
+
+            per_sample_dihedral_losses = phi_loss_per_sample + psi_loss_per_sample
+            total_dihedral_loss += per_sample_dihedral_losses.mean().item()
 
             # Structure Alignment Losses
             if alignment_module is not None and 'structural_tokens' in batch:
