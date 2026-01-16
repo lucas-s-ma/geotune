@@ -15,11 +15,7 @@ from tqdm import tqdm
 import wandb
 import argparse
 from omegaconf import OmegaConf
-import matplotlib
-matplotlib.use('Agg')  # Set backend before importing pyplot (required for HPC)
-import matplotlib.pyplot as plt
 import pickle
-import numpy as np
 
 # Add project root to Python path
 project_root = Path(__file__).parent.parent
@@ -126,30 +122,29 @@ def train_epoch(model, dataloader, optimizer, scheduler, lagrangian_module, dihe
                 primary_loss=mlm_loss,
                 dihedral_losses=per_sample_dihedral_losses,
                 gnn_losses=per_sample_gnn_losses,
-                foldseek_losses=per_sample_foldseek_losses,
-                indices=indices
+                foldseek_losses=per_sample_foldseek_losses
             )
             
             scaled_lagrangian = lagrangian / gradient_accumulation_steps
 
-        # 4. Primal Update (Model Parameters)
+        # 4. Backward pass for gradients
         scaler.scale(scaled_lagrangian).backward()
 
         if (batch_idx + 1) % gradient_accumulation_steps == 0:
+            # 5. Dual Update (Lagrange Multipliers) - UPDATE LAMBDA FIRST
+            lagrangian_module.update_dual_variables(
+                per_sample_dihedral_losses,
+                per_sample_gnn_losses,
+                per_sample_foldseek_losses
+            )
+
+            # 6. Primal Update (Model Parameters) - UPDATE THETA SECOND
             scaler.unscale_(optimizer)
             torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
             scaler.step(optimizer)
             scaler.update()
             scheduler.step()
             optimizer.zero_grad()
-
-            # 5. Dual Update (Lagrange Multipliers)
-            lagrangian_module.update_dual_variables(
-                per_sample_dihedral_losses,
-                per_sample_gnn_losses,
-                per_sample_foldseek_losses,
-                indices
-            )
 
         # Logging
         total_lagrangian_loss += lagrangian.item()
@@ -246,7 +241,7 @@ def validate(model, dataloader, dihedral_module, alignment_module, gnn_module, d
 
 def log_lambda_distributions(lagrangian_module, epoch, config):
     """
-    Create and log histograms of lambda distributions during training.
+    Log scalar lambda values during training (batch-averaged constraints).
 
     Args:
         lagrangian_module: MultiConstraintLagrangian instance with lambda values
@@ -256,75 +251,16 @@ def log_lambda_distributions(lagrangian_module, epoch, config):
     if not config.logging.use_wandb:
         return
 
-    # Get lambda values
-    lam_dihedral = lagrangian_module.lam_dihedral.cpu().numpy()
-    lam_gnn = lagrangian_module.lam_gnn.cpu().numpy()
-    lam_foldseek = lagrangian_module.lam_foldseek.cpu().numpy()
+    # Get scalar lambda values
+    lam_dihedral = lagrangian_module.lam_dihedral.item()
+    lam_gnn = lagrangian_module.lam_gnn.item()
+    lam_foldseek = lagrangian_module.lam_foldseek.item()
 
-    # Compute statistics (convert to float to avoid numpy compatibility issues)
-    dih_mean = float(lam_dihedral.mean())
-    dih_median = float(np.median(lam_dihedral))
-    dih_std = float(lam_dihedral.std())
-    dih_max = float(lam_dihedral.max())
-
-    gnn_mean = float(lam_gnn.mean())
-    gnn_median = float(np.median(lam_gnn))
-    gnn_std = float(lam_gnn.std())
-    gnn_max = float(lam_gnn.max())
-
-    fs_mean = float(lam_foldseek.mean())
-    fs_median = float(np.median(lam_foldseek))
-    fs_std = float(lam_foldseek.std())
-    fs_max = float(lam_foldseek.max())
-
-    # Create figure with 3 subplots
-    fig, axs = plt.subplots(1, 3, figsize=(18, 5), tight_layout=True)
-
-    # Dihedral lambdas
-    axs[0].hist(lam_dihedral, bins=50, color='blue', alpha=0.7, edgecolor='black')
-    axs[0].set_title(f'Dihedral Lambdas (Epoch {epoch})')
-    axs[0].axvline(dih_mean, color='red', linestyle='--', linewidth=2, label=f'Mean: {dih_mean:.4f}')
-    axs[0].axvline(dih_median, color='green', linestyle='--', linewidth=2, label=f'Median: {dih_median:.4f}')
-    axs[0].legend()
-
-    # GNN lambdas
-    axs[1].hist(lam_gnn, bins=50, color='green', alpha=0.7, edgecolor='black')
-    axs[1].set_title(f'GNN Lambdas (Epoch {epoch})')
-    axs[1].axvline(gnn_mean, color='red', linestyle='--', linewidth=2, label=f'Mean: {gnn_mean:.4f}')
-    axs[1].axvline(gnn_median, color='blue', linestyle='--', linewidth=2, label=f'Median: {gnn_median:.4f}')
-    axs[1].legend()
-
-    # Foldseek lambdas
-    axs[2].hist(lam_foldseek, bins=50, color='red', alpha=0.7, edgecolor='black')
-    axs[2].set_title(f'Foldseek Lambdas (Epoch {epoch})')
-    axs[2].axvline(fs_mean, color='blue', linestyle='--', linewidth=2, label=f'Mean: {fs_mean:.4f}')
-    axs[2].axvline(fs_median, color='green', linestyle='--', linewidth=2, label=f'Median: {fs_median:.4f}')
-    axs[2].legend()
-
-    # Set labels for all subplots
-    for ax in axs:
-        ax.set_xlabel('Lambda Value')
-        ax.set_ylabel('Frequency')
-        ax.grid(True, alpha=0.3)
-
-    # Log to wandb
-    wandb.log({f"lambda_distributions/epoch_{epoch}": wandb.Image(fig)})
-    plt.close(fig)
-
-    # Also log statistics as scalars
+    # Log scalar values to wandb
     wandb.log({
-        f'lambda_stats/dihedral_mean': dih_mean,
-        f'lambda_stats/dihedral_std': dih_std,
-        f'lambda_stats/dihedral_median': dih_median,
-        f'lambda_stats/dihedral_max': dih_max,
-        f'lambda_stats/gnn_mean': gnn_mean,
-        f'lambda_stats/gnn_std': gnn_std,
-        f'lambda_stats/gnn_median': gnn_median,
-        f'lambda_stats/gnn_max': gnn_max,
-        f'lambda_stats/foldseek_mean': fs_mean,
-        f'lambda_stats/foldseek_std': fs_std,
-        f'lambda_stats/foldseek_median': fs_median,
-        f'lambda_stats/foldseek_max': fs_max,
+        'lambda_values/dihedral': lam_dihedral,
+        'lambda_values/gnn': lam_gnn,
+        'lambda_values/foldseek': lam_foldseek,
         'epoch': epoch
     })
 
@@ -354,7 +290,18 @@ def main():
     print(f"Using device: {device}")
 
     if config.logging.use_wandb:
-        wandb.init(project=config.logging.project_name, config=OmegaConf.to_container(config))
+        # Extract short model name (e.g., "8M" from "facebook/esm2_t6_8M_UR50D")
+        model_name_parts = config.model.model_name.split('/')[-1].split('_')
+        model_short = next((part for part in model_name_parts if 'M' in part), 'unknown')
+
+        # Create descriptive run name with key hyperparameters
+        run_name = (f"constrained_{model_short}_"
+                   f"plr{config.training.learning_rate}_"
+                   f"dlr{config.training.dual_learning_rate}_"
+                   f"eps{config.training.dihedral_epsilon}-{config.training.gnn_epsilon}-{config.training.foldseek_epsilon}_"
+                   f"bs{config.training.batch_size}")
+
+        wandb.init(project=config.logging.project_name, config=OmegaConf.to_container(config), name=run_name)
 
     # --- Model and Modules ---
     # Convert OmegaConf objects to primitive Python types to avoid JSON serialization issues
@@ -404,7 +351,6 @@ def main():
 
     # --- Constrained Learning Setup ---
     lagrangian_module = MultiConstraintLagrangian(
-        num_training_samples=len(full_dataset),
         dihedral_epsilon=config.training.dihedral_epsilon,
         gnn_epsilon=config.training.gnn_epsilon,
         foldseek_epsilon=config.training.foldseek_epsilon,
@@ -468,18 +414,17 @@ def main():
     print(f"Final LoRA adapters saved to {final_dir}")
 
     if config.logging.use_wandb:
-        fig, axs = plt.subplots(1, 3, figsize=(18, 5), tight_layout=True)
-        axs[0].hist(lagrangian_module.lam_dihedral.cpu().numpy(), bins=50, color='blue', alpha=0.7)
-        axs[0].set_title('Final Dihedral Lambdas')
-        axs[1].hist(lagrangian_module.lam_gnn.cpu().numpy(), bins=50, color='green', alpha=0.7)
-        axs[1].set_title('Final GNN Lambdas')
-        axs[2].hist(lagrangian_module.lam_foldseek.cpu().numpy(), bins=50, color='red', alpha=0.7)
-        axs[2].set_title('Final Foldseek Lambdas')
-        for ax in axs:
-            ax.set_xlabel('Lambda Value'); ax.set_ylabel('Frequency')
-        wandb.log({"final_lambda_histograms": wandb.Image(plt)})
-        plt.close(fig)
-        print("Logged final lambda histograms to wandb.")
+        # Log final scalar lambda values
+        final_lam_dihedral = lagrangian_module.lam_dihedral.item()
+        final_lam_gnn = lagrangian_module.lam_gnn.item()
+        final_lam_foldseek = lagrangian_module.lam_foldseek.item()
+
+        wandb.log({
+            "final_lambda_values/dihedral": final_lam_dihedral,
+            "final_lambda_values/gnn": final_lam_gnn,
+            "final_lambda_values/foldseek": final_lam_foldseek
+        })
+        print(f"Final lambda values - Dihedral: {final_lam_dihedral:.4f}, GNN: {final_lam_gnn:.4f}, Foldseek: {final_lam_foldseek:.4f}")
 
     if config.logging.use_wandb: wandb.finish()
     print("\nTraining completed!")
