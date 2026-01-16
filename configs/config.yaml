@@ -27,7 +27,7 @@ training:
   learning_rate: 1e-3     # Learning rate (used if primal_lr and dual_lr not specified)
   primal_lr: 1e-3         # Learning rate for primal task (ESM model + MLM head)
   dual_lr: 5e-1           # Learning rate for dual task (structure alignment loss module)
-  num_epochs: 50          # Number of epochs
+  num_epochs: 50          # Number of epochs -- test for convergence
   warmup_steps: 100       # Warmup steps for scheduler
   max_seq_len: 512        # Maximum sequence length - reduced for memory
   seed: 1644                # Random seed
