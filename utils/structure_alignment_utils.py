@@ -98,11 +98,25 @@ class StructureAlignmentLoss(nn.Module):
             - latent_loss_per_sample: Per-sample latent-level losses
             - physical_loss_per_sample: Per-sample physical-level losses
         """
+        # Check for NaN in inputs and return zero loss if found
+        if torch.isnan(pLM_embeddings).any():
+            print("WARNING: NaN detected in pLM_embeddings, returning zero loss")
+            return self._return_zero_loss(pLM_embeddings.device, pLM_embeddings.size(0))
+
+        if torch.isnan(pGNN_embeddings).any():
+            print("WARNING: NaN detected in pGNN_embeddings, returning zero loss")
+            return self._return_zero_loss(pGNN_embeddings.device, pGNN_embeddings.size(0))
+
         # Calculate latent-level loss and per-sample components
         latent_loss, latent_loss_per_sample = self._calculate_latent_loss_with_per_sample(pLM_embeddings, pGNN_embeddings, attention_mask)
 
         # Calculate physical-level loss and per-sample components
         physical_loss, physical_loss_per_sample = self._calculate_physical_loss_with_per_sample(pLM_embeddings, structure_tokens, attention_mask)
+
+        # Check if losses are NaN and handle gracefully
+        if torch.isnan(latent_loss) or torch.isnan(physical_loss):
+            print(f"WARNING: NaN detected in losses (latent: {latent_loss.item()}, physical: {physical_loss.item()}), returning zero loss")
+            return self._return_zero_loss(pLM_embeddings.device, pLM_embeddings.size(0))
 
         # Combine losses
         total_loss = self.latent_weight * latent_loss + self.physical_weight * physical_loss
@@ -113,6 +127,16 @@ class StructureAlignmentLoss(nn.Module):
             'physical_loss': physical_loss,
             'latent_loss_per_sample': latent_loss_per_sample,
             'physical_loss_per_sample': physical_loss_per_sample
+        }
+
+    def _return_zero_loss(self, device, batch_size):
+        """Return zero losses when NaN is detected"""
+        return {
+            'total_loss': torch.tensor(0.0, device=device, requires_grad=True),
+            'latent_loss': torch.tensor(0.0, device=device, requires_grad=True),
+            'physical_loss': torch.tensor(0.0, device=device, requires_grad=True),
+            'latent_loss_per_sample': torch.zeros(batch_size, device=device),
+            'physical_loss_per_sample': torch.zeros(batch_size, device=device)
         }
 
     def _calculate_latent_loss_with_per_sample(self, pLM_embeddings, pGNN_embeddings, attention_mask=None):
