@@ -171,8 +171,6 @@ def extract_protein_info_single(parser, pdb_path):
                     # Get residue name
                     aa_code = three_to_one(residue.get_resname())
                     if aa_code != 'X':  # Unknown amino acid
-                        sequence += aa_code
-
                         # Try to get backbone atom coordinates
                         n_coord = ca_coord = c_coord = None
 
@@ -194,9 +192,14 @@ def extract_protein_info_single(parser, pdb_path):
                         except KeyError:
                             pass  # C coordinate not available
 
-                        n_coords.append(n_coord if n_coord is not None else [0, 0, 0])  # Use zero if not available
-                        ca_coords.append(ca_coord if ca_coord is not None else [0, 0, 0])  # Use zero if not available
-                        c_coords.append(c_coord if c_coord is not None else [0, 0, 0])  # Use zero if not available
+                        # ONLY include residues with complete backbone (N, CA, C atoms)
+                        # Skip residues with missing atoms to avoid NaN issues
+                        if n_coord is not None and ca_coord is not None and c_coord is not None:
+                            sequence += aa_code
+                            n_coords.append(n_coord)
+                            ca_coords.append(ca_coord)
+                            c_coords.append(c_coord)
+                        # else: skip this residue entirely
 
         if len(sequence) > 0:
             # Ensure all coordinate lists have the same length

@@ -48,6 +48,13 @@ class SimpleStructuralEncoder(nn.Module):
         batch_size, seq_len, _ = ca_coords.shape
         device = ca_coords.device
 
+        # Check for invalid coordinates and replace with zeros
+        if torch.isnan(ca_coords).any() or torch.isinf(ca_coords).any():
+            print(f"WARNING: Invalid coordinates detected in batch (NaN or Inf). Replacing with zeros.")
+            ca_coords = torch.where(torch.isnan(ca_coords) | torch.isinf(ca_coords),
+                                   torch.zeros_like(ca_coords),
+                                   ca_coords)
+
         # Compute pairwise distances
         # dist_matrix: (batch_size, seq_len, seq_len)
         dist_matrix = torch.cdist(ca_coords, ca_coords)
@@ -71,8 +78,22 @@ class SimpleStructuralEncoder(nn.Module):
         # features: (batch_size, seq_len, 13)
         features = torch.cat([knn_distances, ca_coords], dim=-1)
 
+        # Check for all-zero features (happens when all coords are [0,0,0])
+        # LayerNorm will produce NaN with all-zero input
+        zero_mask = (features.abs().sum(dim=-1) < 1e-6)  # (batch_size, seq_len)
+        if zero_mask.all():
+            # All features are zero - return random small embeddings to avoid NaN
+            print(f"WARNING: All features are zero (likely all coords are [0,0,0]). Returning random embeddings.")
+            embeddings = torch.randn(batch_size, seq_len, self.hidden_dim, device=device) * 0.01
+            return embeddings
+
         # Encode through MLP
         embeddings = self.encoder(features)  # (batch_size, seq_len, hidden_dim)
+
+        # Replace embeddings for zero-feature positions with small random values
+        if zero_mask.any():
+            random_emb = torch.randn(zero_mask.sum().item(), self.hidden_dim, device=device) * 0.01
+            embeddings[zero_mask] = random_emb
 
         return embeddings
 
