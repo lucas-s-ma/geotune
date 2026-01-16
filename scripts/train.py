@@ -387,8 +387,8 @@ def validate(model, dataloader, dihedral_constraints, device, config, structure_
                 latent_loss = struct_align_results.get('latent_loss', torch.tensor(0.0, device=device))
                 physical_loss = struct_align_results.get('physical_loss', torch.tensor(0.0, device=device))
 
-            # Calculate combined loss
-            combined_loss = mlm_loss + config.model.constraint_weight * total_dihedral_loss + struct_align_loss
+            # Calculate combined loss (matching training weights)
+            combined_loss = mlm_loss + config.model.constraint_weight * total_dihedral_loss + 0.1 * struct_align_loss
 
             total_loss += combined_loss.item()
             constraint_loss_total += total_dihedral_loss.item()
@@ -670,6 +670,7 @@ def main():
         # Primal parameters: ESM model + LM head + dihedral constraints
         primal_params = [
             {'params': [p for n, p in model.named_parameters() if p.requires_grad], 'lr': config.training.primal_lr},
+            {'params': [p for p in dihedral_constraints.parameters() if p.requires_grad], 'lr': config.training.primal_lr},
         ]
 
         # Dual parameters: Structure alignment loss module (if enabled)
@@ -690,6 +691,9 @@ def main():
         # Use single learning rate for all parameters
         print(f"Using single learning rate: {config.training.learning_rate}")
         all_params = list(filter(lambda p: p.requires_grad, model.parameters()))
+
+        # Add dihedral constraint parameters (prediction heads must be trained)
+        all_params += list(filter(lambda p: p.requires_grad, dihedral_constraints.parameters()))
 
         # Add structure alignment loss parameters if enabled
         if structure_alignment_loss is not None:
