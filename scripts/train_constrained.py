@@ -358,7 +358,9 @@ def main():
     ).to(device)
 
     # --- Optimizer, Scheduler, and Scaler ---
-    optimizer = torch.optim.AdamW(filter(lambda p: p.requires_grad, model.parameters()), lr=config.training.learning_rate)
+    # Collect all trainable parameters from model, dihedral module, and alignment module
+    trainable_params = list(model.parameters()) + list(dihedral_module.parameters()) + list(alignment_module.parameters())
+    optimizer = torch.optim.AdamW(filter(lambda p: p.requires_grad, trainable_params), lr=config.training.learning_rate)
     total_steps = (len(train_loader) // getattr(config.training, 'gradient_accumulation_steps', 1)) * config.training.num_epochs
     scheduler = get_linear_schedule_with_warmup(optimizer, num_warmup_steps=config.training.warmup_steps, num_training_steps=total_steps)
     scaler = torch.amp.GradScaler('cuda', enabled=torch.cuda.is_available())
