@@ -131,20 +131,23 @@ def train_epoch(model, dataloader, optimizer, scheduler, lagrangian_module, dihe
         scaler.scale(scaled_lagrangian).backward()
 
         if (batch_idx + 1) % gradient_accumulation_steps == 0:
-            # 5. Dual Update (Lagrange Multipliers) - UPDATE LAMBDA FIRST
+            # 5. Primal Update (Model Parameters) - UPDATE THETA FIRST
+            scaler.unscale_(optimizer)
+            # Clip gradients for all trainable parameters in optimizer
+            all_params = [p for group in optimizer.param_groups for p in group['params']]
+            torch.nn.utils.clip_grad_norm_(all_params, max_norm=1.0)
+            scaler.step(optimizer)
+            scaler.update()
+            scheduler.step()
+            optimizer.zero_grad()
+
+            # 6. Dual Update (Lagrange Multipliers) - UPDATE LAMBDA SECOND
+            # Update based on constraint violations from current batch
             lagrangian_module.update_dual_variables(
                 per_sample_dihedral_losses,
                 per_sample_gnn_losses,
                 per_sample_foldseek_losses
             )
-
-            # 6. Primal Update (Model Parameters) - UPDATE THETA SECOND
-            scaler.unscale_(optimizer)
-            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
-            scaler.step(optimizer)
-            scaler.update()
-            scheduler.step()
-            optimizer.zero_grad()
 
         # Logging
         total_lagrangian_loss += lagrangian.item()
