@@ -317,8 +317,16 @@ def main():
         hidden_dim=esm_hidden_size,
         constraint_weight=config.model.constraint_weight
     ).to(device)
-    alignment_module = StructureAlignmentLoss(hidden_dim=esm_hidden_size, num_structural_classes=21).to(device)
+
+    # Initialize GNN module first to get its output dimension
     gnn_module = PretrainedGNNWrapper(hidden_dim=esm_hidden_size, use_simple_encoder=True).to(device).eval()
+
+    # Create alignment module with separate dimensions for PLM and GNN (Chen et al. 2025)
+    alignment_module = StructureAlignmentLoss(
+        hidden_dim=esm_hidden_size,
+        pgnn_hidden_dim=gnn_module.output_dim,
+        num_structural_classes=21
+    ).to(device)
 
     # --- Data ---
     esm_hidden_size = model.config.hidden_size
