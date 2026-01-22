@@ -37,19 +37,23 @@ class StructureAlignmentLoss(nn.Module):
         shared_projection_dim: int = 512,
         latent_weight: float = 0.5,
         physical_weight: float = 0.5,
-        label_smoothing: float = 0.1
+        label_smoothing: float = 0.1,
+        pgnn_hidden_dim: int = None
     ):
         super().__init__()
 
-        self.hidden_dim = hidden_dim
+        self.hidden_dim = hidden_dim  # pLM hidden dimension
+        self.pgnn_hidden_dim = pgnn_hidden_dim if pgnn_hidden_dim is not None else hidden_dim
         self.num_structural_classes = num_structural_classes
         self.shared_projection_dim = shared_projection_dim
         self.latent_weight = latent_weight
         self.physical_weight = physical_weight
 
-        # Projection layers
-        self.pLM_projection = nn.Linear(hidden_dim, shared_projection_dim)
-        self.pGNN_projection = nn.Linear(hidden_dim, shared_projection_dim)
+        # Projection layers - following Chen et al. (2025) Structure-Aligned Protein Language Model
+        # W_a ∈ ℝ^(D_a×D) projects pLM embeddings from dimension D_a to shared dimension D
+        # W_g ∈ ℝ^(D_g×D) projects pGNN embeddings from dimension D_g to shared dimension D
+        self.pLM_projection = nn.Linear(self.hidden_dim, shared_projection_dim)
+        self.pGNN_projection = nn.Linear(self.pgnn_hidden_dim, shared_projection_dim)
 
         self.temperature = nn.Parameter(torch.tensor(1.0))
 
@@ -315,6 +319,21 @@ class PretrainedGNNWrapper(nn.Module):
                 freeze=True  # Always freeze for pre-computation
             )
             print("Successfully loaded GearNet implementation from TorchDrug")
+
+    @property
+    def output_dim(self):
+        """
+        Returns the output dimension of the GNN embeddings.
+        This allows StructureAlignmentLoss to use separate projection dimensions
+        for pLM and pGNN as described in Chen et al. (2025).
+        """
+        if hasattr(self.backbone, 'hidden_dim'):
+            return self.backbone.hidden_dim
+        elif hasattr(self.backbone, 'output_dim'):
+            return self.backbone.output_dim
+        else:
+            # Fallback: assume output matches the hidden_dim used during initialization
+            return 512
 
     def forward(self, n_coords, ca_coords, c_coords):
         """

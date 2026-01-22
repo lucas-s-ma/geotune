@@ -529,21 +529,24 @@ def main():
     if use_structure_alignment:
         print("Structure alignment loss ENABLED - will use structural embeddings")
 
-        structure_alignment_loss = StructureAlignmentLoss(
-            hidden_dim=esm_hidden_size,
-            num_structural_classes=21,  # 21 structural classes for Foldseek (20 + 'X')
-            shared_projection_dim=512,
-            latent_weight=0.5,
-            physical_weight=0.5
-        ).to(device)
-
-        # Initialize frozen pre-trained GNN (e.g. GearNet or SimpleStructuralEncoder)
+        # Initialize frozen pre-trained GNN (e.g. GearNet or SimpleStructuralEncoder) first
         # NOTE: Using simple encoder due to TorchDrug issue - see TORCHDRUG_ISSUE.md
         frozen_gnn = PretrainedGNNWrapper(
             hidden_dim=esm_hidden_size,
             use_simple_encoder=True  # Using simple encoder (faster, more reliable)
         ).to(device)
         frozen_gnn.eval()  # Set to evaluation mode to ensure no gradients
+
+        # Create structure alignment loss with separate dimensions for PLM and GNN
+        # Following Chen et al. (2025) - allows GNN and PLM to have different dimensions
+        structure_alignment_loss = StructureAlignmentLoss(
+            hidden_dim=esm_hidden_size,
+            pgnn_hidden_dim=frozen_gnn.output_dim,  # GNN output dimension (may differ from PLM)
+            num_structural_classes=21,  # 21 structural classes for Foldseek (20 + 'X')
+            shared_projection_dim=512,
+            latent_weight=0.5,
+            physical_weight=0.5
+        ).to(device)
 
         # Initialize embedding cache for on-the-fly generation and disk storage
         from utils.embedding_cache import EmbeddingCache
