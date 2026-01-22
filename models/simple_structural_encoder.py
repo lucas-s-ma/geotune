@@ -84,7 +84,7 @@ class SimpleStructuralEncoder(nn.Module):
         if zero_mask.all():
             # All features are zero - return random small embeddings to avoid NaN
             print(f"WARNING: All features are zero (likely all coords are [0,0,0]). Returning random embeddings.")
-            embeddings = torch.randn(batch_size, seq_len, self.hidden_dim, device=device) * 0.01
+            embeddings = torch.randn(batch_size, seq_len, self.hidden_dim, device=device, dtype=ca_coords.dtype) * 0.01
             return embeddings
 
         # Encode through MLP
@@ -92,7 +92,7 @@ class SimpleStructuralEncoder(nn.Module):
 
         # Replace embeddings for zero-feature positions with small random values
         if zero_mask.any():
-            random_emb = torch.randn(zero_mask.sum().item(), self.hidden_dim, device=device) * 0.01
+            random_emb = torch.randn(zero_mask.sum().item(), self.hidden_dim, device=device, dtype=embeddings.dtype) * 0.01
             embeddings[zero_mask] = random_emb
 
         return embeddings
