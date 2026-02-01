@@ -353,8 +353,35 @@ class GearNetFromCoordinates(nn.Module):
         try:
             with torch.amp.autocast('cuda', enabled=False):  # Disable autocast for this forward pass
                 print(f"  [GEARNET DEBUG] Calling gearnet_model.forward()...")
-                output = self.gearnet_model(batched_graph, batched_graph.node_feature)
-                print(f"  [GEARNET DEBUG] gearnet_model.forward() returned")
+
+                # On Unix systems, we can use threading with timeout to avoid hanging
+                import threading
+
+                result_container = {'output': None, 'exception': None}
+
+                def run_forward_pass():
+                    try:
+                        result_container['output'] = self.gearnet_model(batched_graph, batched_graph.node_feature)
+                    except Exception as e:
+                        result_container['exception'] = e
+
+                thread = threading.Thread(target=run_forward_pass)
+                thread.daemon = True
+                thread.start()
+                thread.join(timeout=30)  # 30-second timeout
+
+                if thread.is_alive():
+                    print(f"  [GEARNET DEBUG] GearNet forward pass timed out, skipping this batch")
+                    # Return zero embeddings for this batch to allow continuation
+                    dummy_embeddings = torch.zeros(batch_size, seq_len, self.hidden_dim,
+                                                  device=device, dtype=batched_graph.node_feature.dtype)
+                    return dummy_embeddings
+                elif result_container['exception']:
+                    raise result_container['exception']
+                else:
+                    output = result_container['output']
+                    print(f"  [GEARNET DEBUG] gearnet_model.forward() returned")
+
         except Exception as e:
             print(f"  [GEARNET DEBUG] ERROR in model forward: {type(e).__name__}: {e}")
             raise
