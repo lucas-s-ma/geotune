@@ -530,10 +530,9 @@ def main():
         print("Structure alignment loss ENABLED - will use structural embeddings")
 
         # Initialize frozen pre-trained GNN (e.g. GearNet or SimpleStructuralEncoder) first
-        # NOTE: Using simple encoder due to TorchDrug issue - see TORCHDRUG_ISSUE.md
         frozen_gnn = PretrainedGNNWrapper(
             hidden_dim=esm_hidden_size,
-            use_simple_encoder=True  # Using simple encoder (faster, more reliable)
+            use_simple_encoder=False  # Use actual GearNet implementation
         ).to(device)
         frozen_gnn.eval()  # Set to evaluation mode to ensure no gradients
 
