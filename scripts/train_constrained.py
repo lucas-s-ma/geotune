@@ -30,7 +30,7 @@ def parse_args():
     """Parses command-line arguments."""
     parser = argparse.ArgumentParser(description="Train ESM2 with constrained geometric learning and LoRA")
     parser.add_argument("--config", type=str, default="configs/config.yaml", help="Path to the config file.")
-    
+
     # --- Overrides for config file ---
     parser.add_argument("--data_path", type=str, default=None, help="Override path to the processed protein data directory.")
     parser.add_argument("--output_dir", type=str, default=None, help="Override output directory for checkpoints.")
@@ -43,13 +43,13 @@ def parse_args():
     parser.add_argument("--dihedral_epsilon", type=float, default=0.1, help="Epsilon (upper bound) for the dihedral angle constraint.")
     parser.add_argument("--gnn_epsilon", type=float, default=7.0, help="Epsilon (upper bound) for the GNN (latent) structure alignment constraint.")
     parser.add_argument("--foldseek_epsilon", type=float, default=3.0, help="Epsilon (upper bound) for the Foldseek (physical) structure alignment constraint.")
-    
+
     return parser.parse_args()
 
 def train_epoch(model, dataloader, optimizer, scheduler, lagrangian_module, dihedral_module, alignment_module, gnn_module, device, config, scaler):
     """Trains the model for one epoch using a constrained optimization framework."""
     model.train()
-    
+
     total_lagrangian_loss = 0
     total_mlm_loss = 0
     total_dihedral_loss = 0
@@ -81,7 +81,7 @@ def train_epoch(model, dataloader, optimizer, scheduler, lagrangian_module, dihe
 
             masked_outputs = model(input_ids=masked_input_ids, attention_mask=attention_mask)
             pLM_embeddings = masked_outputs['sequence_output']
-            
+
             seq_logits = model.lm_head(pLM_embeddings)
             mlm_loss = nn.CrossEntropyLoss()(seq_logits.view(-1, seq_logits.size(-1)), labels.view(-1))
 
@@ -89,7 +89,7 @@ def train_epoch(model, dataloader, optimizer, scheduler, lagrangian_module, dihe
             # Dihedral Constraint
             cos_true_phi, cos_true_psi = compute_dihedral_angles_from_coordinates(n_coords, ca_coords, c_coords)
             cos_pred_phi, cos_pred_psi = dihedral_module.predict_dihedral_angles(pLM_embeddings)
-            
+
             min_len_phi = min(cos_true_phi.shape[1], cos_pred_phi.shape[1])
             phi_mask = attention_mask[:, 1:1+min_len_phi].float()
             phi_loss_sq = (cos_true_phi[:, :min_len_phi] - cos_pred_phi[:, :min_len_phi])**2
@@ -99,7 +99,7 @@ def train_epoch(model, dataloader, optimizer, scheduler, lagrangian_module, dihe
             psi_mask = attention_mask[:, :min_len_psi].float()
             psi_loss_sq = (cos_true_psi[:, :min_len_psi] - cos_pred_psi[:, :min_len_psi])**2
             psi_loss_per_sample = (psi_loss_sq * psi_mask).sum(dim=1) / psi_mask.sum(dim=1).clamp(min=1.0)
-            
+
             per_sample_dihedral_losses = phi_loss_per_sample + psi_loss_per_sample
 
             # Structure Alignment Constraints
@@ -112,7 +112,7 @@ def train_epoch(model, dataloader, optimizer, scheduler, lagrangian_module, dihe
                 else:
                     with torch.no_grad():
                         pGNN_embeddings = gnn_module(n_coords, ca_coords, c_coords)
-                
+
                 struct_align_results = alignment_module(pLM_embeddings, pGNN_embeddings, structure_tokens, attention_mask)
                 per_sample_gnn_losses = struct_align_results.get('latent_loss_per_sample', per_sample_gnn_losses)
                 per_sample_foldseek_losses = struct_align_results.get('physical_loss_per_sample', per_sample_foldseek_losses)
@@ -124,7 +124,7 @@ def train_epoch(model, dataloader, optimizer, scheduler, lagrangian_module, dihe
                 gnn_losses=per_sample_gnn_losses,
                 foldseek_losses=per_sample_foldseek_losses
             )
-            
+
             scaled_lagrangian = lagrangian / gradient_accumulation_steps
 
         # 4. Backward pass for gradients
@@ -155,7 +155,7 @@ def train_epoch(model, dataloader, optimizer, scheduler, lagrangian_module, dihe
         total_dihedral_loss += per_sample_dihedral_losses.mean().item()
         total_gnn_loss += per_sample_gnn_losses.mean().item()
         total_foldseek_loss += per_sample_foldseek_losses.mean().item()
-        
+
         if batch_idx % 10 == 0 and config.logging.use_wandb:
             avg_lam_dih, avg_lam_gnn, avg_lam_fs = lagrangian_module.get_average_lambdas()
             wandb.log({
@@ -232,7 +232,7 @@ def validate(model, dataloader, dihedral_module, alignment_module, gnn_module, d
                 struct_align_results = alignment_module(pLM_embeddings, pGNN_embeddings, structure_tokens, attention_mask)
                 total_gnn_loss += struct_align_results['latent_loss'].item()
                 total_foldseek_loss += struct_align_results['physical_loss'].item()
-            
+
             num_batches += 1
 
     return (
@@ -279,7 +279,7 @@ def main():
     if args.num_epochs: config.training.num_epochs = args.num_epochs
     if args.learning_rate: config.training.learning_rate = args.learning_rate
     if args.batch_size: config.training.batch_size = args.batch_size
-    
+
     # Add new constrained-learning arguments to the config for logging
     config.training.dual_learning_rate = args.dual_learning_rate
     config.training.dihedral_epsilon = args.dihedral_epsilon
@@ -319,7 +319,7 @@ def main():
     ).to(device)
 
     # Initialize GNN module first to get its output dimension
-    gnn_module = PretrainedGNNWrapper(hidden_dim=esm_hidden_size, use_simple_encoder=True).to(device).eval()
+    gnn_module = PretrainedGNNWrapper(hidden_dim=esm_hidden_size, use_simple_encoder=False).to(device).eval()
 
     # Create alignment module with separate dimensions for PLM and GNN (Chen et al. 2025)
     alignment_module = StructureAlignmentLoss(
@@ -350,12 +350,12 @@ def main():
                         print(f"Pre-computed embeddings have incorrect dimension, expected {esm_hidden_size}. Will generate on-the-fly.")
             except Exception as e:
                 print(f"Could not validate pre-computed embeddings: {e}. Will generate on-the-fly.")
-    
+
     full_dataset = EfficientProteinDataset(config.data.data_path, max_seq_len=config.training.max_seq_len, include_structural_tokens=True, load_embeddings=load_embeddings)
     train_size = int(0.8 * len(full_dataset))
     val_size = len(full_dataset) - train_size
     train_dataset, val_dataset = torch.utils.data.random_split(full_dataset, [train_size, val_size], generator=torch.Generator().manual_seed(config.training.seed))
-    
+
     train_loader = DataLoader(train_dataset, batch_size=config.training.batch_size, shuffle=True, collate_fn=collate_fn, num_workers=4, pin_memory=True)
     val_loader = DataLoader(val_dataset, batch_size=config.training.batch_size, shuffle=False, collate_fn=collate_fn, num_workers=2)
     print(f"Dataset split: {train_size} training, {val_size} validation samples.")
@@ -381,11 +381,11 @@ def main():
     print(f"Starting constrained training for {config.training.num_epochs} epochs...")
     for epoch in range(config.training.num_epochs):
         print(f"\n--- Epoch {epoch+1}/{config.training.num_epochs} ---")
-        
+
         train_lagrangian, train_mlm, train_dihedral, train_gnn, train_foldseek = train_epoch(
             model, train_loader, optimizer, scheduler, lagrangian_module, dihedral_module, alignment_module, gnn_module, device, config, scaler
         )
-        
+
         val_mlm, val_dihedral, val_gnn, val_foldseek = validate(
             model, val_loader, dihedral_module, alignment_module, gnn_module, device, config
         )
@@ -399,7 +399,7 @@ def main():
                 'val_epoch/avg_mlm_loss': val_mlm, 'val_epoch/avg_dihedral_loss': val_dihedral,
                 'val_epoch/avg_gnn_loss': val_gnn, 'val_epoch/avg_foldseek_loss': val_foldseek,
             })
-        
+
         print(f"Epoch {epoch+1} Summary:")
         print(f"  Train | Lagrangian: {train_lagrangian:.4f}, MLM: {train_mlm:.4f}, Dihedral: {train_dihedral:.4f}, GNN: {train_gnn:.4f}, Foldseek: {train_foldseek:.4f}")
         print(f"  Val   | MLM: {val_mlm:.4f}, Dihedral: {val_dihedral:.4f}, GNN: {val_gnn:.4f}, Foldseek: {val_foldseek:.4f}")

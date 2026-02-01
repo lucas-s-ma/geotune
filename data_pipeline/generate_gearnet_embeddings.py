@@ -168,9 +168,9 @@ def generate_gearnet_embeddings_for_dataset(processed_dataset_path, output_dir, 
     # - Still captures structural info via k-NN distances + coordinates
     #
     # TO FIX LATER: See TORCHDRUG_ISSUE.md for detailed troubleshooting
-    # TO RE-ENABLE GEARNET: Set use_simple = False (after fixing TorchDrug)
+    # Use actual GearNet implementation
     # ============================================================================
-    use_simple = True  # CURRENT: Using simple encoder due to TorchDrug issue
+    use_simple = False  # Using actual GearNet implementation
 
     model = PretrainedGNNWrapper(
         hidden_dim=hidden_dim,
