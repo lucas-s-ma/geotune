@@ -209,9 +209,54 @@ class GearNetFromCoordinates(nn.Module):
 
         batched_graph = data.graph_collate(graphs).to(device)
         
-        output = self.gearnet_model(batched_graph, batched_graph.node_feature)
-        
-        node_embeddings = output["node_feature"]
-        final_embeddings = node_embeddings.view(batch_size, seq_len, -1)
+        def create_pretrained_gearnet(hidden_dim=512, pretrained_path=None, freeze=True, **kwargs):
+    """
+    Factory function to create a pre-trained GearNet model
+    """
+    model = GearNetFromCoordinates(
+        hidden_dim=hidden_dim,
+        freeze=freeze,
+        **kwargs
+    )
 
-        return final_embeddings
+    if pretrained_path:
+        try:
+            state_dict = torch.load(pretrained_path, map_location='cpu')
+            model.load_state_dict(state_dict)
+            print(f"Loaded pre-trained GearNet weights from {pretrained_path}")
+        except Exception as e:
+            print(f"Could not load pre-trained weights from {pretrained_path}: {e}")
+            print("Using randomly initialized GearNet")
+
+    return model
+
+import networkx as nx
+import matplotlib.pyplot as plt
+
+def visualize_graph(graph, save_path="graph.png"):
+    """
+    Visualizes a torchdrug.data.Graph object.
+    """
+    edge_list = graph.edge_list.cpu().numpy()
+
+    G = nx.Graph()
+    for i in range(graph.num_node):
+        G.add_node(i)
+
+    for i in range(graph.num_edge):
+        u, v, rel = edge_list[i]
+        G.add_edge(u, v, relation=rel)
+
+    plt.figure(figsize=(12, 12))
+    pos = nx.spring_layout(G)
+
+    edge_colors = [d['relation'] for u, v, d in G.edges(data=True)]
+
+    nx.draw(G, pos, with_labels=True, node_color='lightblue',
+            edge_color=edge_colors, cmap=plt.cm.get_cmap('viridis'),
+            node_size=500, font_size=10)
+
+    plt.title("Graph Structure")
+    plt.savefig(save_path)
+    print(f"Graph visualization saved to {save_path}")
+    plt.close()
