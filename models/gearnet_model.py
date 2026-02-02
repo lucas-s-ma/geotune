@@ -187,19 +187,17 @@ class GearNetFromCoordinates(nn.Module):
 
         # Create actual GearNet model with parameters that work across different TorchDrug versions
         # The exact API can vary depending on the version of TorchDrug you have installed
+        # Based on your TorchDrug version, it requires 'hidden_dims' (plural) as a list
         gearnet_kwargs = {
             'input_dim': 3,  # Input is 3D coordinates
-            'hidden_dim': hidden_dim,
+            'hidden_dims': [hidden_dim] * 4,  # Use list of dimensions for multiple layers
             'num_relation': 7,
             'batch_norm': True,
             'short_cut': True,
-            'concat_hidden': False,
-            'num_mlp_layer': 2,
-            'activation': F.relu,
-            'dropout': 0.1
+            'concat_hidden': False
         }
 
-        # Attempt to create the model, handling different API versions
+        # Attempt to create the model with the correct API for your TorchDrug version
         model_created = False
         try:
             self.gearnet_model = GeometryAwareRelationalGraphNeuralNetwork(**gearnet_kwargs)
@@ -207,31 +205,31 @@ class GearNetFromCoordinates(nn.Module):
             model_created = True
         except TypeError as e:
             print(f"✗ Failed with kwargs: {e}")
-            # If some parameters are not accepted, try with minimal parameters
-            # Different versions of TorchDrug may have different parameter names
+            # If the preferred parameters don't work, try alternative combinations
             try:
-                # Some versions use 'hidden_dims' (plural) instead of 'hidden_dim'
+                # Try with minimal parameters that should work
                 gearnet_kwargs_alt = {
                     'input_dim': 3,
-                    'hidden_dims': [hidden_dim] * 4,  # Use a list instead
-                    'num_relation': 7,
-                    'batch_norm': True,
-                    'short_cut': True,
-                    'concat_hidden': False
+                    'hidden_dims': [hidden_dim, hidden_dim, hidden_dim],  # Smaller network
+                    'num_relation': 7
                 }
                 self.gearnet_model = GeometryAwareRelationalGraphNeuralNetwork(**gearnet_kwargs_alt)
                 print(f"✓ Created GearNet with alt kwargs: {gearnet_kwargs_alt}")
                 model_created = True
             except TypeError as e2:
                 print(f"✗ Failed with alt kwargs: {e2}")
-                # Try with minimal required parameters only
-                self.gearnet_model = GeometryAwareRelationalGraphNeuralNetwork(
-                    input_dim=3,
-                    hidden_dim=hidden_dim,
-                    num_relation=7
-                )
-                print(f"✓ Created GearNet with minimal kwargs")
-                model_created = True
+                # Last resort: try with singular form if available
+                try:
+                    self.gearnet_model = GeometryAwareRelationalGraphNeuralNetwork(
+                        input_dim=3,
+                        hidden_dim=hidden_dim,
+                        num_relation=7
+                    )
+                    print(f"✓ Created GearNet with minimal kwargs")
+                    model_created = True
+                except Exception as e3:
+                    print(f"All attempts failed: {e3}")
+                    raise
 
         # Print model info
         total_params = sum(p.numel() for p in self.gearnet_model.parameters())
