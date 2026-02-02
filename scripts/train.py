@@ -575,6 +575,14 @@ def main():
         else:
             print(f"Pre-computed embeddings not available, will generate on-the-fly with hidden_dim={esm_hidden_size}")
 
+        # Print a message to clarify that the embedding cache message refers to on-the-fly generation
+        # when pre-computed embeddings are not used for the current run
+        if load_embeddings:
+            print("Note: Embedding cache initialized for on-the-fly generation fallback only.")
+            print("Pre-computed embeddings will be used when available.")
+        else:
+            print("Embedding cache initialized for on-the-fly generation and disk storage")
+
         # Create structure alignment loss with separate dimensions for PLM and GNN
         # Following Chen et al. (2025) - allows GNN and PLM to have different dimensions
         structure_alignment_loss = StructureAlignmentLoss(

@@ -489,6 +489,9 @@ class EfficientProteinDataset(Dataset):
             except Exception as e:
                 print(f"Error loading embedding file {embedding_path}: {e}")
                 # Continue without embeddings for this sample
+        elif self.load_embeddings:
+            # Debug: print if protein ID is not found in embedding map
+            print(f"Debug: Protein ID '{protein['id']}' not found in embedding map. Available: {len(self.embedding_file_map)} files")
 
         # Add structural tokens if available
         if self.include_structural_tokens:
