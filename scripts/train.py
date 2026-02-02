@@ -140,42 +140,53 @@ def train_epoch(model, dataloader, optimizer, scheduler, dihedral_constraints, d
             latent_loss = torch.tensor(0.0, device=device)
             physical_loss = torch.tensor(0.0, device=device)
 
-            if structure_alignment_loss is not None and has_structural_tokens and 'structural_tokens' in batch:
-                # Get structural tokens
-                structure_tokens = batch['structural_tokens'].to(device)
+            # Check if structure alignment loss module is available and we have the required data
+            if structure_alignment_loss is not None:
+                # Check if we have structural tokens
+                if has_structural_tokens:
+                    # Get structural tokens
+                    structure_tokens = batch['structural_tokens'].to(device)
 
-                # Use pre-computed embeddings if available, otherwise use embedding cache
-                if has_precomputed_embeddings:
-                    pGNN_embeddings = batch['precomputed_embeddings'].to(device)
+                    # Use pre-computed embeddings if available, otherwise use embedding cache
+                    if has_precomputed_embeddings:
+                        pGNN_embeddings = batch['precomputed_embeddings'].to(device)
+                        print(f"DEBUG: Using precomputed embeddings with shape {pGNN_embeddings.shape}")  # Debug print
+                    else:
+                        # Generate embeddings using cache (generates on-the-fly and saves to disk)
+                        protein_ids = batch['protein_ids']
+                        batch_size_gnn = n_coords.shape[0]
+                        pGNN_embeddings_list = []
+
+                        for i in range(batch_size_gnn):
+                            # Get embedding from cache (generates and saves if not cached)
+                            embedding = embedding_cache.get_embedding(
+                                protein_id=protein_ids[i],
+                                n_coords=n_coords[i],
+                                ca_coords=ca_coords[i],
+                                c_coords=c_coords[i]
+                            )
+                            pGNN_embeddings_list.append(embedding)
+
+                        # Stack results back into batch
+                        pGNN_embeddings = torch.stack(pGNN_embeddings_list, dim=0)
+
+                    # Calculate structure alignment loss
+                    struct_align_results = structure_alignment_loss(
+                        pLM_embeddings=pLM_embeddings,
+                        pGNN_embeddings=pGNN_embeddings,
+                        structure_tokens=structure_tokens,
+                        attention_mask=attention_mask
+                    )
+                    struct_align_loss = struct_align_results['total_loss']
+                    latent_loss = struct_align_results.get('latent_loss', torch.tensor(0.0, device=device))
+                    physical_loss = struct_align_results.get('physical_loss', torch.tensor(0.0, device=device))
+
+                    print(f"DEBUG: Structure alignment loss computed - Total: {struct_align_loss.item():.4f}, "
+                          f"Latent: {latent_loss.item():.4f}, Physical: {physical_loss.item():.4f}")  # Debug print
                 else:
-                    # Generate embeddings using cache (generates on-the-fly and saves to disk)
-                    protein_ids = batch['protein_ids']
-                    batch_size_gnn = n_coords.shape[0]
-                    pGNN_embeddings_list = []
-
-                    for i in range(batch_size_gnn):
-                        # Get embedding from cache (generates and saves if not cached)
-                        embedding = embedding_cache.get_embedding(
-                            protein_id=protein_ids[i],
-                            n_coords=n_coords[i],
-                            ca_coords=ca_coords[i],
-                            c_coords=c_coords[i]
-                        )
-                        pGNN_embeddings_list.append(embedding)
-
-                    # Stack results back into batch
-                    pGNN_embeddings = torch.stack(pGNN_embeddings_list, dim=0)
-
-                # Calculate structure alignment loss
-                struct_align_results = structure_alignment_loss(
-                    pLM_embeddings=pLM_embeddings,
-                    pGNN_embeddings=pGNN_embeddings,
-                    structure_tokens=structure_tokens,
-                    attention_mask=attention_mask
-                )
-                struct_align_loss = struct_align_results['total_loss']
-                latent_loss = struct_align_results.get('latent_loss', torch.tensor(0.0, device=device))
-                physical_loss = struct_align_results.get('physical_loss', torch.tensor(0.0, device=device))
+                    print("DEBUG: No structural tokens in batch")  # Debug print
+            else:
+                print("DEBUG: Structure alignment loss module not available")  # Debug print
 
             # Combine all losses
             combined_loss = mlm_loss + \
