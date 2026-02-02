@@ -209,7 +209,14 @@ class GearNetFromCoordinates(nn.Module):
 
         batched_graph = data.graph_collate(graphs).to(device)
         
-        def create_pretrained_gearnet(hidden_dim=512, pretrained_path=None, freeze=True, **kwargs):
+        output = self.gearnet_model(batched_graph, batched_graph.node_feature)
+        
+        node_embeddings = output["node_feature"]
+        final_embeddings = node_embeddings.view(batch_size, seq_len, -1)
+
+        return final_embeddings
+
+def create_pretrained_gearnet(hidden_dim=512, pretrained_path=None, freeze=True, **kwargs):
     """
     Factory function to create a pre-trained GearNet model
     """
