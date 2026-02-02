@@ -355,7 +355,6 @@ class EfficientProteinDataset(Dataset):
     """
     _protein_data = None  # Class-level cache for protein data
     _structural_tokens = None  # Class-level cache for structural tokens
-    _embeddings_dict = None  # Class-level cache for embeddings
 
     def __init__(self, processed_data_path, max_seq_len=1024, include_structural_tokens=False, load_embeddings=False):
         """
@@ -390,19 +389,27 @@ class EfficientProteinDataset(Dataset):
             else:
                 print("Warning: Structural tokens file not found. Continuing without them.")
                 self.include_structural_tokens = False
-        
+
         self.structural_tokens = EfficientProteinDataset._structural_tokens
 
-        if self.load_embeddings and EfficientProteinDataset._embeddings_dict is None:
+        # Only store the embeddings directory path for lazy loading
+        if self.load_embeddings:
             embeddings_dir = os.path.join(processed_data_path, "embeddings")
             if os.path.exists(embeddings_dir):
-                EfficientProteinDataset._embeddings_dict = self._load_embeddings_from_directory(embeddings_dir)
-                print(f"Loaded and cached embeddings for {len(EfficientProteinDataset._embeddings_dict)} proteins.")
+                self.embeddings_dir = embeddings_dir
+                # Create a mapping of protein_id to embedding file path for lazy loading
+                self.embedding_file_map = {}
+                for filename in os.listdir(embeddings_dir):
+                    if filename.endswith('_gearnet_embeddings.pkl'):
+                        protein_id = filename.replace('_gearnet_embeddings.pkl', '')
+                        self.embedding_file_map[protein_id] = os.path.join(embeddings_dir, filename)
+                print(f"Found embedding files for {len(self.embedding_file_map)} proteins (lazy loading enabled).")
             else:
                 print("Warning: Embeddings directory not found. Continuing without pre-computed embeddings.")
                 self.load_embeddings = False
-        
-        self.embeddings_dict = EfficientProteinDataset._embeddings_dict
+        else:
+            self.embeddings_dir = None
+            self.embedding_file_map = {}
 
         mapping_file = os.path.join(processed_data_path, "id_mapping.json")
         if os.path.exists(mapping_file):
@@ -410,38 +417,6 @@ class EfficientProteinDataset(Dataset):
                 self.id_mapping = {int(k): v for k, v in json.load(f).items()}
         else:
             self.id_mapping = {i: p['id'] for i, p in enumerate(self.proteins)}
-
-    def _load_embeddings_from_directory(self, embeddings_dir):
-        """
-        Load embeddings from the embeddings directory
-        Each protein should have an embedding file named {protein_id}_gearnet_embeddings.pkl
-        """
-        embeddings_dict = {}
-
-        # Look for embedding files in the directory
-        for filename in os.listdir(embeddings_dir):
-            if filename.endswith('_gearnet_embeddings.pkl'):
-                protein_id = filename.replace('_gearnet_embeddings.pkl', '')
-
-                # Load the embedding file
-                embedding_path = os.path.join(embeddings_dir, filename)
-                try:
-                    with open(embedding_path, 'rb') as f:
-                        embedding_data = pickle.load(f)
-                        # Store only the embeddings array and ensure it's a proper numpy array
-                        embeddings = embedding_data['embeddings']
-                        if isinstance(embeddings, list):
-                            # Convert list back to numpy array
-                            embeddings_dict[protein_id] = np.array(embeddings, dtype=np.float32)
-                        elif isinstance(embeddings, np.ndarray):
-                            # Create a new array to avoid reference issues
-                            embeddings_dict[protein_id] = np.array(embeddings, copy=True, dtype=np.float32)
-                        else:
-                            embeddings_dict[protein_id] = np.array(embeddings, dtype=np.float32)
-                except Exception as e:
-                    print(f"Error loading embedding file {embedding_path}: {e}")
-
-        return embeddings_dict
 
     def __len__(self):
         return len(self.proteins)
@@ -487,18 +462,33 @@ class EfficientProteinDataset(Dataset):
             'index': idx
         }
 
-        # Add pre-computed embeddings if available
-        if self.load_embeddings and protein['id'] in self.embeddings_dict:
-            embeddings = self.embeddings_dict[protein['id']]
-            # Truncate if necessary
-            if len(embeddings) > self.max_seq_len:
-                embeddings = embeddings[:self.max_seq_len]
-            # Pad or truncate to max length
-            if len(embeddings) < self.max_seq_len:
-                padding_length = self.max_seq_len - len(embeddings)
-                padding_embeddings = np.zeros((padding_length, embeddings.shape[-1]))
-                embeddings = np.vstack([embeddings, padding_embeddings])
-            result['precomputed_embeddings'] = torch.tensor(embeddings, dtype=torch.float32)
+        # Add pre-computed embeddings if available (lazy loading)
+        if self.load_embeddings and protein['id'] in self.embedding_file_map:
+            # Load embedding file on-demand
+            embedding_path = self.embedding_file_map[protein['id']]
+            try:
+                with open(embedding_path, 'rb') as f:
+                    embedding_data = pickle.load(f)
+                    embeddings = embedding_data['embeddings']
+                    if isinstance(embeddings, list):
+                        embeddings = np.array(embeddings, dtype=np.float32)
+                    elif isinstance(embeddings, np.ndarray):
+                        embeddings = np.array(embeddings, copy=True, dtype=np.float32)
+                    else:
+                        embeddings = np.array(embeddings, dtype=np.float32)
+
+                # Truncate if necessary
+                if len(embeddings) > self.max_seq_len:
+                    embeddings = embeddings[:self.max_seq_len]
+                # Pad or truncate to max length
+                if len(embeddings) < self.max_seq_len:
+                    padding_length = self.max_seq_len - len(embeddings)
+                    padding_embeddings = np.zeros((padding_length, embeddings.shape[-1]))
+                    embeddings = np.vstack([embeddings, padding_embeddings])
+                result['precomputed_embeddings'] = torch.tensor(embeddings, dtype=torch.float32)
+            except Exception as e:
+                print(f"Error loading embedding file {embedding_path}: {e}")
+                # Continue without embeddings for this sample
 
         # Add structural tokens if available
         if self.include_structural_tokens:

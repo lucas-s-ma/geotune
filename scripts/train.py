@@ -586,15 +586,14 @@ def main():
     embeddings_path = os.path.join(config.data.data_path, "embeddings")
     embeddings_exist = os.path.exists(embeddings_path)
 
-    # IMPORTANT: Check if pre-computed embeddings have the correct dimension
-    # Pre-computed embeddings must match ESM model's hidden_dim
-    # ESM2-150M uses 640, ESM2-35M uses 480, etc.
+    # Check if pre-computed embeddings are available
+    # NOTE: Different dimensions are allowed and will be handled by projection layers in StructureAlignmentLoss
     load_embeddings = False  # Default to False
     if embeddings_exist:
-        # Check if any embedding files exist and have correct dimensions
+        # Check if any embedding files exist
         embedding_files = [f for f in os.listdir(embeddings_path) if f.endswith('_gearnet_embeddings.pkl')]
         if embedding_files:
-            # Load a sample embedding to check dimensions
+            # Load a sample embedding to verify it exists and get dimensions
             sample_embedding_file = os.path.join(embeddings_path, embedding_files[0])
             try:
                 with open(sample_embedding_file, 'rb') as f:
@@ -603,11 +602,12 @@ def main():
                     # Convert list back to numpy array to check dimensions
                     if isinstance(sample_embeddings, list):
                         sample_embeddings = np.array(sample_embeddings)
-                    if len(sample_embeddings.shape) >= 2 and sample_embeddings.shape[-1] == esm_hidden_size:
+                    if len(sample_embeddings.shape) >= 2:
                         load_embeddings = True
-                        print(f"Pre-computed embeddings found with correct dimension {esm_hidden_size}, will load them.")
+                        print(f"Pre-computed embeddings found with dimension {sample_embeddings.shape[-1]}, will load them.")
+                        print(f"These will be projected to match the model architecture as needed.")
                     else:
-                        print(f"Pre-computed embeddings have wrong dimension {sample_embeddings.shape[-1]}, expected {esm_hidden_size}.")
+                        print(f"Pre-computed embeddings have invalid shape: {sample_embeddings.shape}")
                         print(f"Embeddings will be generated on-the-fly with hidden_dim={esm_hidden_size}")
             except Exception as e:
                 print(f"Error checking pre-computed embeddings: {e}")
