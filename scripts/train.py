@@ -693,50 +693,23 @@ def main():
     # Primal task: ESM model (LoRA params) + LM head + dihedral constraints
     # Dual task: Structure alignment loss module (projection layers + prediction head)
 
-    # Check if primal_lr and dual_lr are specified in config
-    use_separate_lr = hasattr(config.training, 'primal_lr') and hasattr(config.training, 'dual_lr')
+    # Use single learning rate for all parameters
+    print(f"Using single learning rate: {config.training.learning_rate}")
+    all_params = list(filter(lambda p: p.requires_grad, model.parameters()))
 
-    if use_separate_lr:
-        print(f"Using separate learning rates: primal_lr={config.training.primal_lr}, dual_lr={config.training.dual_lr}")
+    # Add dihedral constraint parameters (prediction heads must be trained)
+    all_params += list(filter(lambda p: p.requires_grad, dihedral_constraints.parameters()))
 
-        # Primal parameters: ESM model + LM head + dihedral constraints
-        primal_params = [
-            {'params': [p for n, p in model.named_parameters() if p.requires_grad], 'lr': config.training.primal_lr},
-            {'params': [p for p in dihedral_constraints.parameters() if p.requires_grad], 'lr': config.training.primal_lr},
-        ]
+    # Add structure alignment loss parameters if enabled
+    if structure_alignment_loss is not None:
+        all_params += list(filter(lambda p: p.requires_grad, structure_alignment_loss.parameters()))
 
-        # Dual parameters: Structure alignment loss module (if enabled)
-        if structure_alignment_loss is not None:
-            dual_params = [
-                {'params': [p for p in structure_alignment_loss.parameters() if p.requires_grad], 'lr': config.training.dual_lr}
-            ]
-            param_groups = primal_params + dual_params
-        else:
-            param_groups = primal_params
-
-        optimizer = torch.optim.AdamW(
-            param_groups,
-            weight_decay=0.01,
-            betas=(0.9, 0.98)
-        )
-    else:
-        # Use single learning rate for all parameters
-        print(f"Using single learning rate: {config.training.learning_rate}")
-        all_params = list(filter(lambda p: p.requires_grad, model.parameters()))
-
-        # Add dihedral constraint parameters (prediction heads must be trained)
-        all_params += list(filter(lambda p: p.requires_grad, dihedral_constraints.parameters()))
-
-        # Add structure alignment loss parameters if enabled
-        if structure_alignment_loss is not None:
-            all_params += list(filter(lambda p: p.requires_grad, structure_alignment_loss.parameters()))
-
-        optimizer = torch.optim.AdamW(
-            all_params,
-            lr=config.training.learning_rate,
-            weight_decay=0.01,
-            betas=(0.9, 0.98)
-        )
+    optimizer = torch.optim.AdamW(
+        all_params,
+        lr=config.training.learning_rate,
+        weight_decay=0.01,
+        betas=(0.9, 0.98)
+    )
 
     # Setup scheduler
     # Adjust total steps for gradient accumulation
