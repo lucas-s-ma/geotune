@@ -9,6 +9,7 @@ from pathlib import Path
 import torch
 import transformers
 import torch.nn as nn
+import numpy as np
 from torch.utils.data import DataLoader
 from transformers import get_linear_schedule_with_warmup
 from tqdm import tqdm
@@ -135,7 +136,7 @@ def train_epoch(model, dataloader, optimizer, scheduler, lagrangian_module, dihe
             scaler.unscale_(optimizer)
             # Clip gradients for all trainable parameters in optimizer
             all_params = [p for group in optimizer.param_groups for p in group['params']]
-            torch.nn.utils.clip_grad_norm_(all_params, max_norm=1.0)
+            torch.nn.utils.clip_grad_norm_(all_params, max_norm=0.5)
             scaler.step(optimizer)
             scaler.update()
             scheduler.step()
