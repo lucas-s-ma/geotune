@@ -333,24 +333,48 @@ def main():
     esm_hidden_size = model.config.hidden_size
     # Check for pre-computed embeddings
     embeddings_path = os.path.join(config.data.data_path, "embeddings")
-    load_embeddings = False
-    if os.path.exists(embeddings_path):
-        sample_files = [f for f in os.listdir(embeddings_path) if f.endswith('_gearnet_embeddings.pkl')]
-        if sample_files:
+
+    # Check if pre-computed embeddings are available
+    # NOTE: Different dimensions are allowed and will be handled by projection layers in StructureAlignmentLoss
+    load_embeddings = False  # Default to False
+    embeddings_exist = os.path.exists(embeddings_path)
+
+    if embeddings_exist:
+        # Check if any embedding files exist
+        embedding_files = [f for f in os.listdir(embeddings_path) if f.endswith('_gearnet_embeddings.pkl')]
+        if embedding_files:
+            # Load a sample embedding to verify it exists and get dimensions
+            sample_embedding_file = os.path.join(embeddings_path, embedding_files[0])
             try:
-                with open(os.path.join(embeddings_path, sample_files[0]), 'rb') as f:
+                with open(sample_embedding_file, 'rb') as f:
                     sample_data = pickle.load(f)
-                    embeddings = sample_data['embeddings']
+                    sample_embeddings = sample_data['embeddings']
                     # Convert list back to numpy array to check dimensions
-                    if isinstance(embeddings, list):
-                        embeddings = np.array(embeddings)
-                    if embeddings.shape[-1] == esm_hidden_size:
+                    if isinstance(sample_embeddings, list):
+                        sample_embeddings = np.array(sample_embeddings)
+                    if len(sample_embeddings.shape) >= 2:
                         load_embeddings = True
-                        print(f"Pre-computed embeddings found with correct dimension ({esm_hidden_size}).")
+                        pgnn_hidden_dim = sample_embeddings.shape[-1]  # Get the actual embedding dimension
+                        print(f"Pre-computed embeddings found with dimension {pgnn_hidden_dim}, will load them.")
+                        print(f"These will be projected to match the model architecture as needed.")
+
+                        # Update the StructureAlignmentLoss with the correct dimensions
+                        alignment_module = StructureAlignmentLoss(
+                            hidden_dim=esm_hidden_size,
+                            pgnn_hidden_dim=pgnn_hidden_dim,  # Use the actual embedding dimension
+                            num_structural_classes=21
+                        ).to(device)
                     else:
-                        print(f"Pre-computed embeddings have incorrect dimension, expected {esm_hidden_size}. Will generate on-the-fly.")
+                        print(f"Pre-computed embeddings have invalid shape: {sample_embeddings.shape}")
+                        print(f"Embeddings will be generated on-the-fly with hidden_dim={esm_hidden_size}")
             except Exception as e:
-                print(f"Could not validate pre-computed embeddings: {e}. Will generate on-the-fly.")
+                print(f"Error checking pre-computed embeddings: {e}")
+                print(f"Embeddings will be generated on-the-fly with hidden_dim={esm_hidden_size}")
+        else:
+            print(f"Pre-computed embeddings directory exists but no embedding files found.")
+            print(f"Embeddings will be generated on-the-fly with hidden_dim={esm_hidden_size}")
+    else:
+        print(f"Pre-computed embeddings not available, will generate on-the-fly with hidden_dim={esm_hidden_size}")
 
     full_dataset = EfficientProteinDataset(config.data.data_path, max_seq_len=config.training.max_seq_len, include_structural_tokens=True, load_embeddings=load_embeddings)
     train_size = int(0.8 * len(full_dataset))
