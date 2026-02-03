@@ -150,6 +150,9 @@ def train_epoch(model, dataloader, optimizer, scheduler, dihedral_constraints, d
                     # Use pre-computed embeddings if available, otherwise use embedding cache
                     if has_precomputed_embeddings:
                         pGNN_embeddings = batch['precomputed_embeddings'].to(device)
+                        # Option 5: Normalize embeddings to prevent large values
+                        pGNN_embeddings_norm = torch.norm(pGNN_embeddings, p=2, dim=-1, keepdim=True)
+                        pGNN_embeddings = pGNN_embeddings / (pGNN_embeddings_norm + 1e-8)
                         print(f"DEBUG: Using precomputed embeddings with shape {pGNN_embeddings.shape}")  # Debug print
                     else:
                         # Generate embeddings using cache (generates on-the-fly and saves to disk)
@@ -193,6 +196,11 @@ def train_epoch(model, dataloader, optimizer, scheduler, dihedral_constraints, d
                             config.model.constraint_weight * total_dihedral_loss + \
                             0.1 * struct_align_loss
 
+            # Option 3: Check for NaN values in combined loss
+            if torch.isnan(combined_loss).any():
+                print("WARNING: NaN detected in combined_loss, skipping this batch")
+                continue
+
             # Scale loss for gradient accumulation
             combined_loss = combined_loss / gradient_accumulation_steps
 
@@ -218,7 +226,7 @@ def train_epoch(model, dataloader, optimizer, scheduler, dihedral_constraints, d
                 scaler.unscale_(optimizer)
 
             # Clip gradients
-            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=0.5)
 
             # Log gradient norms for debugging
             if batch_idx % 10 == 0:
