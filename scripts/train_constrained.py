@@ -334,6 +334,7 @@ def main():
     ).to(device)
 
     # --- Data ---
+    use_structure_alignment = getattr(config.constraints, 'use_structure_alignment', True)
     use_precomputed = getattr(config.data, 'use_precomputed_embeddings', False)
     load_embeddings = False
     pgnn_hidden_dim = None

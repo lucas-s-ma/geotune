@@ -553,7 +553,10 @@ def main():
             sample_embedding_file = os.path.join(embeddings_path, embedding_files[0])
             with open(sample_embedding_file, 'rb') as f:
                 sample_data = pickle.load(f)
-                pgnn_hidden_dim = sample_data['embeddings'].shape[-1]
+                sample_embeddings = sample_data['embeddings']
+                if isinstance(sample_embeddings, list):
+                    sample_embeddings = np.array(sample_embeddings)
+                pgnn_hidden_dim = sample_embeddings.shape[-1]
                 print(f"Inferred GNN embedding dimension from sample: {pgnn_hidden_dim}")
 
         else:
