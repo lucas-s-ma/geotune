@@ -102,25 +102,33 @@ class StructureAlignmentLoss(nn.Module):
             - latent_loss_per_sample: Per-sample latent-level losses
             - physical_loss_per_sample: Per-sample physical-level losses
         """
-        # Check for NaN in inputs and return zero loss if found
-        if torch.isnan(pLM_embeddings).any():
-            print("WARNING: NaN detected in pLM_embeddings, returning zero loss")
+        # Check for NaN in inputs. If found, return a loss that will not contribute to gradient
+        if torch.isnan(pLM_embeddings).any() or torch.isinf(pLM_embeddings).any():
+            print("WARNING: NaN or Inf detected in pLM_embeddings, returning zero loss")
             return self._return_zero_loss(pLM_embeddings.device, pLM_embeddings.size(0))
 
-        if torch.isnan(pGNN_embeddings).any():
-            print("WARNING: NaN detected in pGNN_embeddings, returning zero loss")
+        if torch.isnan(pGNN_embeddings).any() or torch.isinf(pGNN_embeddings).any():
+            print("WARNING: NaN or Inf detected in pGNN_embeddings, returning zero loss")
             return self._return_zero_loss(pGNN_embeddings.device, pGNN_embeddings.size(0))
 
-        # Calculate latent-level loss and per-sample components
-        latent_loss, latent_loss_per_sample = self._calculate_latent_loss_with_per_sample(pLM_embeddings, pGNN_embeddings, attention_mask)
+        # Calculate latent-level loss
+        latent_loss, latent_loss_per_sample = self._calculate_latent_loss_with_per_sample(
+            pLM_embeddings, pGNN_embeddings, attention_mask
+        )
 
-        # Calculate physical-level loss and per-sample components
-        physical_loss, physical_loss_per_sample = self._calculate_physical_loss_with_per_sample(pLM_embeddings, structure_tokens, attention_mask)
+        # Calculate physical-level loss
+        physical_loss, physical_loss_per_sample = self._calculate_physical_loss_with_per_sample(
+            pLM_embeddings, structure_tokens, attention_mask
+        )
 
         # Check if losses are NaN and handle gracefully
-        if torch.isnan(latent_loss) or torch.isnan(physical_loss):
-            print(f"WARNING: NaN detected in losses (latent: {latent_loss.item()}, physical: {physical_loss.item()}), returning zero loss")
-            return self._return_zero_loss(pLM_embeddings.device, pLM_embeddings.size(0))
+        if torch.isnan(latent_loss) or torch.isinf(latent_loss):
+            print(f"WARNING: NaN or Inf detected in latent_loss, returning zero.")
+            latent_loss = torch.tensor(0.0, device=pLM_embeddings.device, requires_grad=True)
+        
+        if torch.isnan(physical_loss) or torch.isinf(physical_loss):
+            print(f"WARNING: NaN or Inf detected in physical_loss, returning zero.")
+            physical_loss = torch.tensor(0.0, device=pLM_embeddings.device, requires_grad=True)
 
         # Combine losses
         total_loss = self.latent_weight * latent_loss + self.physical_weight * physical_loss
@@ -147,103 +155,62 @@ class StructureAlignmentLoss(nn.Module):
         """
         Calculate the latent-level contrastive loss between pLM and pGNN embeddings with per-sample outputs
         """
+        eps = 1e-8
         batch_size, seq_len, hidden_dim = pLM_embeddings.shape
 
         # Project embeddings to shared space
-        pLM_projected = self.pLM_projection(pLM_embeddings)  # (batch_size, seq_len, shared_dim)
-        pGNN_projected = self.pGNN_projection(pGNN_embeddings)  # (batch_size, seq_len, shared_dim)
+        pLM_projected = self.pLM_projection(pLM_embeddings)
+        pGNN_projected = self.pGNN_projection(pGNN_embeddings)
 
-        eps = 1e-6
-
-        # Normalize embeddings to prevent large dot products
+        # Normalize embeddings to prevent large dot products and numerical instability
         pLM_projected = F.normalize(pLM_projected, p=2, dim=-1, eps=eps)
         pGNN_projected = F.normalize(pGNN_projected, p=2, dim=-1, eps=eps)
 
-        if torch.isnan(pLM_projected).any():
-            print(f"WARNING: NaN detected in pLM_projected")
-            return self._return_zero_loss(pLM_embeddings.device, batch_size)
-        if torch.isnan(pGNN_projected).any():
-            print(f"WARNING: NaN detected in pGNN_projected")
-            return self._return_zero_loss(pGNN_embeddings.device, batch_size)
+        # Clamp temperature to a reasonable range to prevent instability
+        clamped_temp = torch.clamp(self.temperature, min=0.01, max=100.0)
 
-        # Calculate per-sample latent losses
         latent_loss_per_sample = torch.zeros(batch_size, device=pLM_embeddings.device)
 
         for i in range(batch_size):
-            # Get embeddings for single sample
-            pLM_single = pLM_projected[i]  # (seq_len, shared_dim)
-            pGNN_single = pGNN_projected[i]  # (seq_len, shared_dim)
+            pLM_single = pLM_projected[i]
+            pGNN_single = pGNN_projected[i]
 
-            if torch.isnan(pLM_single).any():
-                print(f"WARNING: NaN detected in pLM_single for sample {i}")
-                continue
-            if torch.isnan(pGNN_single).any():
-                print(f"WARNING: NaN detected in pGNN_single for sample {i}")
-                continue
-
-            # Apply mask for this sample if provided
             if attention_mask is not None:
-                sample_mask = attention_mask[i].bool()  # (seq_len,)
-                pLM_active = pLM_single[sample_mask]  # (active_len, shared_dim)
-                pGNN_active = pGNN_single[sample_mask]  # (active_len, shared_dim)
+                sample_mask = attention_mask[i].bool()
+                pLM_active = pLM_single[sample_mask]
+                pGNN_active = pGNN_single[sample_mask]
             else:
-                pLM_active = pLM_single  # (seq_len, shared_dim)
-                pGNN_active = pGNN_single  # (seq_len, shared_dim)
+                pLM_active = pLM_single
+                pGNN_active = pGNN_single
 
-            # If no active positions, continue
             if pLM_active.size(0) == 0:
                 continue
 
-            # Calculate similarity scores: (active_len, active_len)
-            
-            print(pLM_active.shape, pGNN_active.shape)
-
-            similarity_matrix = torch.matmul(pLM_active, pGNN_active.t()) * self.temperature  # Scaled dot product
-            
-            if torch.isnan(pLM_active).any():
-                print(f"WARNING: NaN detected in pLM_active for sample {i}")
-                continue
-            if torch.isnan(pGNN_active).any():
-                print(f"WARNING: NaN detected in pGNN_active for sample {i}")
+            # Check for NaNs in active embeddings before similarity calculation
+            if torch.isnan(pLM_active).any() or torch.isnan(pGNN_active).any():
+                print(f"WARNING: NaN detected in active embeddings for sample {i}, skipping.")
                 continue
 
-            # Clamp similarity matrix to prevent extreme values that cause numerical issues
-            similarity_matrix = torch.clamp(similarity_matrix, min=-100.0, max=100.0)
-
-            # Create labels for cross-entropy: diagonal positions are positive pairs
+            # Calculate similarity scores
+            similarity_matrix = torch.matmul(pLM_active, pGNN_active.t()) * clamped_temp
+            
+            # Create labels for cross-entropy
             active_len = pLM_active.size(0)
             labels = torch.arange(active_len, device=pLM_embeddings.device)
 
-            # Check for NaN in similarity matrix before computing loss
-            if torch.isnan(similarity_matrix).any():
-                print(f"WARNING: NaN detected in similarity matrix for sample {i}")
-                continue
-
-            # Loss from pLM to pGNN (a2g)
+            # Calculate loss in both directions
             a2g_loss = F.cross_entropy(similarity_matrix, labels)
-
-            # Loss from pGNN to pLM (g2a)
             g2a_loss = F.cross_entropy(similarity_matrix.t(), labels)
 
-            # Check for NaN in computed losses
-            if torch.isnan(a2g_loss) or torch.isnan(g2a_loss):
-                print(f"WARNING: NaN detected in computed losses for sample {i}")
-                continue
-
-            # Average the two directional losses for this sample
             sample_loss = 0.5 * (a2g_loss + g2a_loss)
 
-            # Check for NaN in final sample loss
-            if torch.isnan(sample_loss):
-                print(f"WARNING: NaN detected in final sample loss for sample {i}")
-                continue
-
-            latent_loss_per_sample[i] = sample_loss
+            if not torch.isnan(sample_loss) and not torch.isinf(sample_loss):
+                latent_loss_per_sample[i] = sample_loss
 
         # Overall latent loss is the average of per-sample losses
-        valid_samples = latent_loss_per_sample != 0
-        if valid_samples.any():
-            latent_loss = latent_loss_per_sample[valid_samples].mean()
+        valid_samples_mask = latent_loss_per_sample != 0
+        if valid_samples_mask.any():
+            latent_loss = latent_loss_per_sample[valid_samples_mask].mean()
         else:
             latent_loss = torch.tensor(0.0, device=pLM_embeddings.device, requires_grad=True)
 

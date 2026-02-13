@@ -305,82 +305,51 @@ def validate(model, dataloader, dihedral_constraints, device, config, structure_
     structure_alignment_loss_total = 0
     struct_align_latent_loss = 0
     struct_align_physical_loss = 0
-    num_batches = 0  # Track number of batches for averaging
+    num_batches = 0
 
     with torch.no_grad():
-        for batch_idx, batch in enumerate(tqdm(dataloader, desc="Validating")):
-            # Move batch to device
+        progress_bar = tqdm(dataloader, desc="Validating")
+        for batch_idx, batch in enumerate(progress_bar):
             input_ids = batch['input_ids'].to(device)
             attention_mask = batch['attention_mask'].to(device)
             n_coords = batch['n_coords'].to(device)
             ca_coords = batch['ca_coords'].to(device)
             c_coords = batch['c_coords'].to(device)
 
-            # Check if structural tokens are available in the batch
             has_structural_tokens = 'structural_tokens' in batch
-
-            # Check if pre-computed embeddings are available
             has_precomputed_embeddings = 'precomputed_embeddings' in batch
 
-            # Forward pass
+            # === Forward pass for Geometric and Structural Losses (using unmasked inputs) ===
             outputs = model(
                 input_ids=input_ids,
                 attention_mask=attention_mask
             )
-
-            # Create random masks for MLM task
-            seq_output = outputs['sequence_output']
-            batch_size, seq_len, hidden_dim = seq_output.shape
-            mask_ratio = 0.15
-
-            mask_positions = (torch.rand(batch_size, seq_len, device=device) < mask_ratio) & (attention_mask.bool())
-            labels = input_ids.clone()
-            labels[~mask_positions] = -100
-
-            masked_input_ids = input_ids.clone()
-            masked_input_ids[mask_positions] = 32  # Use <mask> token ID (32 in ESM2)
-
-            masked_outputs = model(
-                input_ids=masked_input_ids,
-                attention_mask=attention_mask
-            )
-
-            # Calculate MLM loss
-            seq_logits = model.lm_head(masked_outputs['sequence_output'])
-            mlm_loss = nn.CrossEntropyLoss(ignore_index=-100)(seq_logits.view(-1, seq_logits.size(-1)), labels.view(-1))
+            pLM_embeddings = outputs['sequence_output']
 
             # Calculate dihedral constraint loss
             dihedral_losses = dihedral_constraints(
-                masked_outputs['sequence_output'],
+                pLM_embeddings,
                 n_coords,
                 ca_coords,
                 c_coords,
                 attention_mask
             )
-
             total_dihedral_loss = dihedral_losses['total_dihedral_loss']
 
-            # Calculate structure alignment loss if structural tokens are available
+            # Calculate structure alignment loss
             struct_align_loss = torch.tensor(0.0, device=device)
             latent_loss = torch.tensor(0.0, device=device)
             physical_loss = torch.tensor(0.0, device=device)
 
-            if structure_alignment_loss is not None and has_structural_tokens and 'structural_tokens' in batch:
-                # Get structural tokens
+            if structure_alignment_loss is not None and has_structural_tokens:
                 structure_tokens = batch['structural_tokens'].to(device)
-
-                # Use pre-computed embeddings if available, otherwise use embedding cache
+                
                 if has_precomputed_embeddings:
-                    # Use pre-computed embeddings
                     pGNN_embeddings = batch['precomputed_embeddings'].to(device)
                 else:
-                    # Generate embeddings using cache (generates on-the-fly and saves to disk)
                     protein_ids = batch['protein_ids']
-                    batch_size_gnn = n_coords.shape[0]
                     pGNN_embeddings_list = []
-
-                    for i in range(batch_size_gnn):
-                        # Get embedding from cache (generates and saves if not cached)
+                    for i in range(len(protein_ids)):
                         embedding = embedding_cache.get_embedding(
                             protein_id=protein_ids[i],
                             n_coords=n_coords[i],
@@ -388,14 +357,8 @@ def validate(model, dataloader, dihedral_constraints, device, config, structure_
                             c_coords=c_coords[i]
                         )
                         pGNN_embeddings_list.append(embedding)
-
-                    # Stack results back into batch
                     pGNN_embeddings = torch.stack(pGNN_embeddings_list, dim=0)
 
-                # Get pLM embeddings
-                pLM_embeddings = masked_outputs['sequence_output']
-
-                # Calculate structure alignment loss
                 struct_align_results = structure_alignment_loss(
                     pLM_embeddings=pLM_embeddings,
                     pGNN_embeddings=pGNN_embeddings,
@@ -406,22 +369,45 @@ def validate(model, dataloader, dihedral_constraints, device, config, structure_
                 latent_loss = struct_align_results.get('latent_loss', torch.tensor(0.0, device=device))
                 physical_loss = struct_align_results.get('physical_loss', torch.tensor(0.0, device=device))
 
-            # Calculate combined loss (matching training weights)
-            combined_loss = mlm_loss + config.model.constraint_weight * total_dihedral_loss + 0.1 * struct_align_loss
+            # === Forward pass for MLM Loss (using masked inputs) ===
+            mask_ratio = 0.15
+            mask_positions = (torch.rand(input_ids.shape, device=device) < mask_ratio) & attention_mask.bool()
+            labels = input_ids.clone()
+            labels[~mask_positions] = -100
 
+            masked_input_ids = input_ids.clone()
+            masked_input_ids[mask_positions] = 32  # ESM2 mask token ID
+
+            masked_outputs = model(
+                input_ids=masked_input_ids,
+                attention_mask=attention_mask
+            )
+            seq_logits = model.lm_head(masked_outputs['sequence_output'])
+            mlm_loss = nn.CrossEntropyLoss(ignore_index=-100)(seq_logits.view(-1, seq_logits.size(-1)), labels.view(-1))
+
+            # Combine all losses
+            combined_loss = mlm_loss + \
+                            config.model.constraint_weight * total_dihedral_loss + \
+                            0.1 * struct_align_loss
+            
+            if torch.isnan(combined_loss).any() or torch.isinf(combined_loss).any():
+                print(f"WARNING: NaN or Inf in combined validation loss for batch {batch_idx}. Skipping.")
+                continue
+
+            # Accumulate losses for epoch averages
             total_loss += combined_loss.item()
             constraint_loss_total += total_dihedral_loss.item()
             mlm_loss_total += mlm_loss.item()
             structure_alignment_loss_total += struct_align_loss.item()
             struct_align_latent_loss += latent_loss.item()
             struct_align_physical_loss += physical_loss.item()
-            num_batches += 1  # Increment batch counter
+            num_batches += 1
 
-            # Log only physical and latent losses at batch level for debugging
+            # Log batch-level validation losses for debugging
             if config.logging.use_wandb:
                 wandb.log({
-                    'val_batch_foldseek_loss': physical_loss.item(),  # Physical corresponds to structural token prediction
-                    'val_batch_gnn_loss': latent_loss.item(),  # Latent corresponds to contrastive GNN learning
+                    'val_batch_foldseek_loss': physical_loss.item(),
+                    'val_batch_gnn_loss': latent_loss.item(),
                 })
 
     # Calculate epoch averages
