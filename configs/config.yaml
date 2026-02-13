@@ -34,7 +34,7 @@ training:
   output_dir: "outputs"   # Output directory
   checkpoint_frequency: 1 # Save checkpoint every N epochs (default: 2, set to 1 for testing)
   use_gradient_checkpointing: true  # Enable gradient checkpointing to save memory
-  mixed_precision: true   # Use fp16 mixed precision training
+  mixed_precision: false   # Use fp16 mixed precision training
 
 # Data configuration
 data:

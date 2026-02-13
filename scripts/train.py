@@ -687,12 +687,15 @@ def main():
 
     # Setup mixed precision scaler if enabled
     scaler = None
-    if hasattr(config.training, 'mixed_precision') and config.training.mixed_precision:
+    use_mixed_precision = getattr(config.training, 'mixed_precision', False)
+    if use_mixed_precision:
         if torch.cuda.is_available():
             scaler = torch.amp.GradScaler('cuda')
-            print("Mixed precision training enabled")
+            print("Mixed precision training enabled.")
         else:
-            print("Mixed precision requested but CUDA not available, using float32")
+            print("Mixed precision requested but CUDA not available, using float32.")
+    else:
+        print("Mixed precision training disabled.")
 
     # Training loop
     print(f"Starting training for {config.training.num_epochs} epochs...")

@@ -402,7 +402,17 @@ def main():
     optimizer = torch.optim.AdamW(filter(lambda p: p.requires_grad, trainable_params), lr=config.training.learning_rate)
     total_steps = (len(train_loader) // getattr(config.training, 'gradient_accumulation_steps', 1)) * config.training.num_epochs
     scheduler = get_linear_schedule_with_warmup(optimizer, num_warmup_steps=config.training.warmup_steps, num_training_steps=total_steps)
-    scaler = torch.amp.GradScaler('cuda', enabled=torch.cuda.is_available())
+    
+    scaler = None
+    use_mixed_precision = getattr(config.training, 'mixed_precision', False)
+    if use_mixed_precision:
+        if torch.cuda.is_available():
+            scaler = torch.amp.GradScaler('cuda')
+            print("Mixed precision training enabled.")
+        else:
+            print("Mixed precision requested but CUDA not available, using float32.")
+    else:
+        print("Mixed precision training disabled.")
 
     # --- Training Loop ---
     print(f"Starting constrained training for {config.training.num_epochs} epochs...")
