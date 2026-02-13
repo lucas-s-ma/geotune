@@ -174,25 +174,33 @@ class GearNetFromCoordinates(nn.Module):
         batch_size, seq_len, _ = ca_coords.shape
 
         graphs = []
+        original_lengths = []
         for b in range(batch_size):
-            node_pos = ca_coords[b]
+            # Find the original, unpadded length by finding the first row of all zeros in ca_coords
+            non_zero_mask = ca_coords[b].abs().sum(dim=1) > 0
+            original_len = non_zero_mask.sum().item()
+            original_lengths.append(original_len)
             
+            node_pos = ca_coords[b][:original_len]
+
             edge_list = []
-            for i in range(seq_len):
+            # Sequence-based edges
+            for i in range(original_len):
                 for offset in [-3, -2, -1, 1, 2, 3]:
                     j = i + offset
-                    if 0 <= j < seq_len:
-                        relation_type = 0 if offset < 0 else 1
+                    if 0 <= j < original_len:
+                        relation_type = 3 + offset if offset > 0 else 2 + offset
                         edge_list.append([i, j, relation_type])
 
-            if seq_len > 1:
+            # KNN-based edges
+            if original_len > 1:
                 dist_matrix = torch.cdist(node_pos, node_pos)
-                k = min(10, seq_len - 1)
+                k = min(10, original_len - 1)
                 if k > 0:
                     _, topk_indices = torch.topk(dist_matrix, k + 1, largest=False)
-                    for i in range(seq_len):
+                    for i in range(original_len):
                         for j in topk_indices[i, 1:]:
-                            edge_list.append([i, j.item(), 2])
+                            edge_list.append([i, j.item(), 6]) # Relation type 6 for KNN
             
             if not edge_list:
                 edge_list.append([0, 0, 0])
@@ -201,7 +209,7 @@ class GearNetFromCoordinates(nn.Module):
 
             graph = data.Graph(
                 edge_list=edge_list_tensor,
-                num_node=seq_len,
+                num_node=original_len,
                 num_relation=7,
                 node_feature=node_pos
             )
@@ -212,7 +220,19 @@ class GearNetFromCoordinates(nn.Module):
         output = self.gearnet_model(batched_graph, batched_graph.node_feature)
         
         node_embeddings = output["node_feature"]
-        final_embeddings = node_embeddings.view(batch_size, seq_len, -1)
+
+        # Correctly un-batch the embeddings
+        final_embeddings = torch.zeros(batch_size, seq_len, self.hidden_dim, device=device)
+        
+        # Get node counts for each graph in the batch
+        node_counts = batched_graph.num_nodes
+        
+        # Split the flat node_embeddings tensor into a list of tensors
+        unbatched_embeddings = node_embeddings.split(node_counts.tolist())
+
+        for i in range(batch_size):
+            original_len = original_lengths[i]
+            final_embeddings[i, :original_len, :] = unbatched_embeddings[i]
 
         return final_embeddings
 

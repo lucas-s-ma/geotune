@@ -153,12 +153,18 @@ class StructureAlignmentLoss(nn.Module):
         pLM_projected = self.pLM_projection(pLM_embeddings)  # (batch_size, seq_len, shared_dim)
         pGNN_projected = self.pGNN_projection(pGNN_embeddings)  # (batch_size, seq_len, shared_dim)
 
-        # Add small epsilon to prevent numerical instabilities
-        eps = 1e-8
+        eps = 1e-6
 
         # Normalize embeddings to prevent large dot products
-        pLM_projected = F.normalize(pLM_projected, p=2, dim=-1)
-        pGNN_projected = F.normalize(pGNN_projected, p=2, dim=-1)
+        pLM_projected = F.normalize(pLM_projected, p=2, dim=-1, eps=eps)
+        pGNN_projected = F.normalize(pGNN_projected, p=2, dim=-1, eps=eps)
+
+        if torch.isnan(pLM_projected).any():
+            print(f"WARNING: NaN detected in pLM_projected")
+            return self._return_zero_loss(pLM_embeddings.device, batch_size)
+        if torch.isnan(pGNN_projected).any():
+            print(f"WARNING: NaN detected in pGNN_projected")
+            return self._return_zero_loss(pGNN_embeddings.device, batch_size)
 
         # Calculate per-sample latent losses
         latent_loss_per_sample = torch.zeros(batch_size, device=pLM_embeddings.device)
@@ -167,6 +173,13 @@ class StructureAlignmentLoss(nn.Module):
             # Get embeddings for single sample
             pLM_single = pLM_projected[i]  # (seq_len, shared_dim)
             pGNN_single = pGNN_projected[i]  # (seq_len, shared_dim)
+
+            if torch.isnan(pLM_single).any():
+                print(f"WARNING: NaN detected in pLM_single for sample {i}")
+                continue
+            if torch.isnan(pGNN_single).any():
+                print(f"WARNING: NaN detected in pGNN_single for sample {i}")
+                continue
 
             # Apply mask for this sample if provided
             if attention_mask is not None:
@@ -182,7 +195,17 @@ class StructureAlignmentLoss(nn.Module):
                 continue
 
             # Calculate similarity scores: (active_len, active_len)
+            
+            print(pLM_active.shape, pGNN_active.shape)
+
             similarity_matrix = torch.matmul(pLM_active, pGNN_active.t()) * self.temperature  # Scaled dot product
+            
+            if torch.isnan(pLM_active).any():
+                print(f"WARNING: NaN detected in pLM_active for sample {i}")
+                continue
+            if torch.isnan(pGNN_active).any():
+                print(f"WARNING: NaN detected in pGNN_active for sample {i}")
+                continue
 
             # Clamp similarity matrix to prevent extreme values that cause numerical issues
             similarity_matrix = torch.clamp(similarity_matrix, min=-100.0, max=100.0)
