@@ -38,7 +38,9 @@ training:
 
 # Data configuration
 data:
-  data_path: "data/processed"   # Path to processed data files
+  data_path: "data/processed"
+  use_precomputed_embeddings: true # Set to true to use stored embeddings, false to generate on-the-fly
+   # Path to processed data files
   num_workers: 2          # Number of data loading workers
 
 # Data pipeline configuration

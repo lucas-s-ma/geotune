@@ -150,10 +150,6 @@ def train_epoch(model, dataloader, optimizer, scheduler, dihedral_constraints, d
                     # Use pre-computed embeddings if available, otherwise use embedding cache
                     if has_precomputed_embeddings:
                         pGNN_embeddings = batch['precomputed_embeddings'].to(device)
-                        # Option 5: Normalize embeddings to prevent large values
-                        pGNN_embeddings_norm = torch.norm(pGNN_embeddings, p=2, dim=-1, keepdim=True)
-                        pGNN_embeddings = pGNN_embeddings / (pGNN_embeddings_norm + 1e-8)
-                        print(f"DEBUG: Using precomputed embeddings with shape {pGNN_embeddings.shape}")  # Debug print
                     else:
                         # Generate embeddings using cache (generates on-the-fly and saves to disk)
                         protein_ids = batch['protein_ids']
@@ -530,91 +526,70 @@ def main():
 
     # Initialize structure alignment loss module and GNN (if enabled)
     use_structure_alignment = getattr(config.constraints, 'use_structure_alignment', True)
+    use_precomputed = getattr(config.data, 'use_precomputed_embeddings', False)
+
+    frozen_gnn = None
+    structure_alignment_loss = None
+    embedding_cache = None
 
     if use_structure_alignment:
-        print("Structure alignment loss ENABLED - will use structural embeddings")
+        print("Structure alignment loss ENABLED.")
 
-        # Initialize frozen pre-trained GNN (e.g. GearNet or SimpleStructuralEncoder) first
-        frozen_gnn = PretrainedGNNWrapper(
-            hidden_dim=esm_hidden_size,
-            use_simple_encoder=False  # Use actual GearNet implementation
-        ).to(device)
-        frozen_gnn.eval()  # Set to evaluation mode to ensure no gradients
-
-        # Check if embeddings directory exists to determine the actual dimension of pre-computed embeddings
-        pgnn_hidden_dim = frozen_gnn.output_dim  # Default to the GNN's output dimension
-        embeddings_path = os.path.join(config.data.data_path, "embeddings")
-
-        # Check if pre-computed embeddings are available
-        # NOTE: Different dimensions are allowed and will be handled by projection layers in StructureAlignmentLoss
-        load_embeddings = False  # Default to False
-        embeddings_exist = os.path.exists(embeddings_path)
-
-        if embeddings_exist:
-            # Check if any embedding files exist
+        # Determine whether to load pre-computed embeddings or generate them
+        if use_precomputed:
+            print("Attempting to use pre-computed embeddings as per config.")
+            embeddings_path = os.path.join(config.data.data_path, "embeddings")
+            if not os.path.exists(embeddings_path) or not any(f.endswith('_gearnet_embeddings.pkl') for f in os.listdir(embeddings_path)):
+                raise FileNotFoundError(
+                    f"Configuration requires pre-computed embeddings, but none were found in {embeddings_path}. "
+                    "Please generate embeddings first or set 'use_precomputed_embeddings' to false in your config."
+                )
+            
+            print("Pre-computed embeddings found. On-the-fly generation will be disabled.")
+            load_embeddings = True
+            
+            # We still need to get the dimension from a sample embedding
             embedding_files = [f for f in os.listdir(embeddings_path) if f.endswith('_gearnet_embeddings.pkl')]
-            if embedding_files:
-                # Load a sample embedding to verify it exists and get dimensions
-                sample_embedding_file = os.path.join(embeddings_path, embedding_files[0])
-                try:
-                    with open(sample_embedding_file, 'rb') as f:
-                        sample_data = pickle.load(f)
-                        sample_embeddings = sample_data['embeddings']
-                        # Convert list back to numpy array to check dimensions
-                        if isinstance(sample_embeddings, list):
-                            sample_embeddings = np.array(sample_embeddings)
-                        if len(sample_embeddings.shape) >= 2:
-                            load_embeddings = True
-                            pgnn_hidden_dim = sample_embeddings.shape[-1]  # Get the actual embedding dimension
-                            print(f"Pre-computed embeddings found with dimension {pgnn_hidden_dim}, will load them.")
-                            print(f"These will be projected to match the model architecture as needed.")
-                        else:
-                            print(f"Pre-computed embeddings have invalid shape: {sample_embeddings.shape}")
-                            print(f"Embeddings will be generated on-the-fly with hidden_dim={esm_hidden_size}")
-                except Exception as e:
-                    print(f"Error checking pre-computed embeddings: {e}")
-                    print(f"Embeddings will be generated on-the-fly with hidden_dim={esm_hidden_size}")
-            else:
-                print(f"Pre-computed embeddings directory exists but no embedding files found.")
-                print(f"Embeddings will be generated on-the-fly with hidden_dim={esm_hidden_size}")
-        else:
-            print(f"Pre-computed embeddings not available, will generate on-the-fly with hidden_dim={esm_hidden_size}")
+            sample_embedding_file = os.path.join(embeddings_path, embedding_files[0])
+            with open(sample_embedding_file, 'rb') as f:
+                sample_data = pickle.load(f)
+                pgnn_hidden_dim = sample_data['embeddings'].shape[-1]
+                print(f"Inferred GNN embedding dimension from sample: {pgnn_hidden_dim}")
 
-        # Print a message to clarify that the embedding cache message refers to on-the-fly generation
-        # when pre-computed embeddings are not used for the current run
-        if load_embeddings:
-            print("Note: Embedding cache initialized for on-the-fly generation fallback only.")
-            print("Pre-computed embeddings will be used when available.")
         else:
-            print("Embedding cache initialized for on-the-fly generation and disk storage")
+            print("Generating embeddings on-the-fly.")
+            load_embeddings = False
+            
+            # Initialize frozen pre-trained GNN for on-the-fly generation
+            frozen_gnn = PretrainedGNNWrapper(
+                hidden_dim=esm_hidden_size,
+                use_simple_encoder=False
+            ).to(device)
+            frozen_gnn.eval()
+            pgnn_hidden_dim = frozen_gnn.output_dim
 
-        # Create structure alignment loss with separate dimensions for PLM and GNN
-        # Following Chen et al. (2025) - allows GNN and PLM to have different dimensions
+            # Initialize embedding cache for on-the-fly generation
+            from utils.embedding_cache import EmbeddingCache
+            cache_dir = os.path.join(config.training.output_dir, "embedding_cache")
+            embedding_cache = EmbeddingCache(
+                cache_dir=cache_dir,
+                gnn_model=frozen_gnn,
+                device=device,
+                verbose=True
+            )
+            print(f"Embedding cache for on-the-fly generation initialized at: {cache_dir}")
+
+        # Create structure alignment loss module
         structure_alignment_loss = StructureAlignmentLoss(
             hidden_dim=esm_hidden_size,
-            pgnn_hidden_dim=pgnn_hidden_dim,  # Use the actual embedding dimension
-            num_structural_classes=21,  # 21 structural classes for Foldseek (20 + 'X')
+            pgnn_hidden_dim=pgnn_hidden_dim,
+            num_structural_classes=21,
             shared_projection_dim=512,
             latent_weight=0.5,
             physical_weight=0.5
         ).to(device)
-
-        # Initialize embedding cache for on-the-fly generation and disk storage
-        from utils.embedding_cache import EmbeddingCache
-        cache_dir = os.path.join(config.training.output_dir, "embedding_cache")
-        embedding_cache = EmbeddingCache(
-            cache_dir=cache_dir,
-            gnn_model=frozen_gnn,
-            device=device,
-            verbose=True
-        )
-        print(f"Embedding cache initialized at: {cache_dir}")
-        print("Embeddings will be generated on-the-fly in first epoch and cached to disk for subsequent epochs")
     else:
-        print("Structure alignment loss DISABLED - training with MLM + dihedral constraints only")
-        structure_alignment_loss = None
-        frozen_gnn = None
-        embedding_cache = None
+        print("Structure alignment loss DISABLED.")
 
     # Load dataset
     print("Loading dataset...")

@@ -194,34 +194,22 @@ def validate(model, dataloader, dihedral_module, alignment_module, gnn_module, d
             ca_coords = batch['ca_coords'].to(device)
             c_coords = batch['c_coords'].to(device)
 
-            # Forward pass and MLM Loss
-            mask_ratio = 0.15
-            mask_positions = (torch.rand(input_ids.shape, device=device) < mask_ratio) & attention_mask.bool()
-            labels = input_ids.clone()
-            labels[~mask_positions] = -100
-            masked_input_ids = input_ids.clone()
-            masked_input_ids[mask_positions] = 32
-            masked_outputs = model(input_ids=masked_input_ids, attention_mask=attention_mask)
-            pLM_embeddings = masked_outputs['sequence_output']
-            seq_logits = model.lm_head(pLM_embeddings)
-            total_mlm_loss += nn.CrossEntropyLoss(ignore_index=-100)(seq_logits.view(-1, seq_logits.size(-1)), labels.view(-1)).item()
+            # === Forward pass for Geometric and Structural Losses (using unmasked inputs) ===
+            outputs = model(input_ids=input_ids, attention_mask=attention_mask)
+            pLM_embeddings = outputs['sequence_output']
 
-            # Dihedral Loss - compute per-sample losses to match training
+            # Dihedral Loss
             cos_true_phi, cos_true_psi = compute_dihedral_angles_from_coordinates(n_coords, ca_coords, c_coords)
             cos_pred_phi, cos_pred_psi = dihedral_module.predict_dihedral_angles(pLM_embeddings)
-
             min_len_phi = min(cos_true_phi.shape[1], cos_pred_phi.shape[1])
             phi_mask = attention_mask[:, 1:1+min_len_phi].float()
             phi_loss_sq = (cos_true_phi[:, :min_len_phi] - cos_pred_phi[:, :min_len_phi])**2
             phi_loss_per_sample = (phi_loss_sq * phi_mask).sum(dim=1) / phi_mask.sum(dim=1).clamp(min=1.0)
-
             min_len_psi = min(cos_true_psi.shape[1], cos_pred_psi.shape[1])
             psi_mask = attention_mask[:, :min_len_psi].float()
             psi_loss_sq = (cos_true_psi[:, :min_len_psi] - cos_pred_psi[:, :min_len_psi])**2
             psi_loss_per_sample = (psi_loss_sq * psi_mask).sum(dim=1) / psi_mask.sum(dim=1).clamp(min=1.0)
-
-            per_sample_dihedral_losses = phi_loss_per_sample + psi_loss_per_sample
-            total_dihedral_loss += per_sample_dihedral_losses.mean().item()
+            total_dihedral_loss += (phi_loss_per_sample + psi_loss_per_sample).mean().item()
 
             # Structure Alignment Losses
             if alignment_module is not None and 'structural_tokens' in batch:
@@ -230,17 +218,33 @@ def validate(model, dataloader, dihedral_module, alignment_module, gnn_module, d
                     pGNN_embeddings = batch['precomputed_embeddings'].to(device)
                 else:
                     pGNN_embeddings = gnn_module(n_coords, ca_coords, c_coords)
+                
                 struct_align_results = alignment_module(pLM_embeddings, pGNN_embeddings, structure_tokens, attention_mask)
-                total_gnn_loss += struct_align_results['latent_loss'].item()
-                total_foldseek_loss += struct_align_results['physical_loss'].item()
+                
+                # Ensure we handle cases where loss is not computed (e.g., all NaNs were skipped)
+                if torch.is_tensor(struct_align_results['latent_loss']):
+                    total_gnn_loss += struct_align_results['latent_loss'].item()
+                if torch.is_tensor(struct_align_results['physical_loss']):
+                    total_foldseek_loss += struct_align_results['physical_loss'].item()
+
+            # === Forward pass for MLM Loss (using masked inputs) ===
+            mask_ratio = 0.15
+            mask_positions = (torch.rand(input_ids.shape, device=device) < mask_ratio) & attention_mask.bool()
+            labels = input_ids.clone()
+            labels[~mask_positions] = -100
+            masked_input_ids = input_ids.clone()
+            masked_input_ids[mask_positions] = 32
+            masked_outputs = model(input_ids=masked_input_ids, attention_mask=attention_mask)
+            seq_logits = model.lm_head(masked_outputs['sequence_output'])
+            total_mlm_loss += nn.CrossEntropyLoss(ignore_index=-100)(seq_logits.view(-1, seq_logits.size(-1)), labels.view(-1)).item()
 
             num_batches += 1
 
     return (
-        total_mlm_loss / num_batches,
-        total_dihedral_loss / num_batches,
-        total_gnn_loss / num_batches,
-        total_foldseek_loss / num_batches
+        total_mlm_loss / num_batches if num_batches > 0 else 0,
+        total_dihedral_loss / num_batches if num_batches > 0 else 0,
+        total_gnn_loss / num_batches if num_batches > 0 else 0,
+        total_foldseek_loss / num_batches if num_batches > 0 else 0
     )
 
 def log_lambda_distributions(lagrangian_module, epoch, config):
@@ -330,51 +334,45 @@ def main():
     ).to(device)
 
     # --- Data ---
-    esm_hidden_size = model.config.hidden_size
-    # Check for pre-computed embeddings
-    embeddings_path = os.path.join(config.data.data_path, "embeddings")
+    use_precomputed = getattr(config.data, 'use_precomputed_embeddings', False)
+    load_embeddings = False
+    pgnn_hidden_dim = None
 
-    # Check if pre-computed embeddings are available
-    # NOTE: Different dimensions are allowed and will be handled by projection layers in StructureAlignmentLoss
-    load_embeddings = False  # Default to False
-    embeddings_exist = os.path.exists(embeddings_path)
-
-    if embeddings_exist:
-        # Check if any embedding files exist
-        embedding_files = [f for f in os.listdir(embeddings_path) if f.endswith('_gearnet_embeddings.pkl')]
-        if embedding_files:
-            # Load a sample embedding to verify it exists and get dimensions
+    if use_structure_alignment:
+        if use_precomputed:
+            print("Attempting to use pre-computed embeddings as per config.")
+            embeddings_path = os.path.join(config.data.data_path, "embeddings")
+            if not os.path.exists(embeddings_path) or not any(f.endswith('_gearnet_embeddings.pkl') for f in os.listdir(embeddings_path)):
+                raise FileNotFoundError(
+                    f"Configuration requires pre-computed embeddings, but none were found in {embeddings_path}. "
+                    "Please generate embeddings first or set 'use_precomputed_embeddings' to false in your config."
+                )
+            
+            print("Pre-computed embeddings found. On-the-fly generation will be disabled.")
+            load_embeddings = True
+            
+            embedding_files = [f for f in os.listdir(embeddings_path) if f.endswith('_gearnet_embeddings.pkl')]
             sample_embedding_file = os.path.join(embeddings_path, embedding_files[0])
-            try:
-                with open(sample_embedding_file, 'rb') as f:
-                    sample_data = pickle.load(f)
-                    sample_embeddings = sample_data['embeddings']
-                    # Convert list back to numpy array to check dimensions
-                    if isinstance(sample_embeddings, list):
-                        sample_embeddings = np.array(sample_embeddings)
-                    if len(sample_embeddings.shape) >= 2:
-                        load_embeddings = True
-                        pgnn_hidden_dim = sample_embeddings.shape[-1]  # Get the actual embedding dimension
-                        print(f"Pre-computed embeddings found with dimension {pgnn_hidden_dim}, will load them.")
-                        print(f"These will be projected to match the model architecture as needed.")
-
-                        # Update the StructureAlignmentLoss with the correct dimensions
-                        alignment_module = StructureAlignmentLoss(
-                            hidden_dim=esm_hidden_size,
-                            pgnn_hidden_dim=pgnn_hidden_dim,  # Use the actual embedding dimension
-                            num_structural_classes=21
-                        ).to(device)
-                    else:
-                        print(f"Pre-computed embeddings have invalid shape: {sample_embeddings.shape}")
-                        print(f"Embeddings will be generated on-the-fly with hidden_dim={esm_hidden_size}")
-            except Exception as e:
-                print(f"Error checking pre-computed embeddings: {e}")
-                print(f"Embeddings will be generated on-the-fly with hidden_dim={esm_hidden_size}")
+            with open(sample_embedding_file, 'rb') as f:
+                sample_data = pickle.load(f)
+                pgnn_hidden_dim = sample_data['embeddings'].shape[-1]
+                print(f"Inferred GNN embedding dimension from sample: {pgnn_hidden_dim}")
+            
+            gnn_module = None # No on-the-fly generation needed
         else:
-            print(f"Pre-computed embeddings directory exists but no embedding files found.")
-            print(f"Embeddings will be generated on-the-fly with hidden_dim={esm_hidden_size}")
+            print("Generating embeddings on-the-fly.")
+            load_embeddings = False
+            gnn_module = PretrainedGNNWrapper(hidden_dim=esm_hidden_size, use_simple_encoder=False).to(device).eval()
+            pgnn_hidden_dim = gnn_module.output_dim
+
+        alignment_module = StructureAlignmentLoss(
+            hidden_dim=esm_hidden_size,
+            pgnn_hidden_dim=pgnn_hidden_dim,
+            num_structural_classes=21
+        ).to(device)
     else:
-        print(f"Pre-computed embeddings not available, will generate on-the-fly with hidden_dim={esm_hidden_size}")
+        gnn_module = None
+        alignment_module = None
 
     full_dataset = EfficientProteinDataset(config.data.data_path, max_seq_len=config.training.max_seq_len, include_structural_tokens=True, load_embeddings=load_embeddings)
     train_size = int(0.8 * len(full_dataset))
