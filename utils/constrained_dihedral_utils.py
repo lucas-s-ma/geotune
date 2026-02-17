@@ -192,13 +192,16 @@ class MultiConstraintLagrangian(nn.Module):
     """
     Implements constrained learning framework for multiple losses using primal-dual optimization.
     Each loss type is constrained separately with its own Lagrange multipliers and epsilon values.
-    This version uses batch-averaged constraints with scalar lambdas.
+    This version uses per-sample lambda vectors, where each entry corresponds to a specific sample
+    in the dataset. Lambda updates are performed only for the samples in the current batch.
     """
     def __init__(self,
+                 dataset_size: int,
                  dihedral_epsilon=0.076,
                  gnn_epsilon=6.38,
                  foldseek_epsilon=3.00,
-                 dual_lr=1e-3):
+                 dual_lr=1e-3,
+                 device=None):
         super().__init__()
 
         # Epsilon values for different constraints
@@ -206,73 +209,109 @@ class MultiConstraintLagrangian(nn.Module):
         self.gnn_epsilon = gnn_epsilon
         self.foldseek_epsilon = foldseek_epsilon
         self.dual_lr = dual_lr
+        self.dataset_size = dataset_size
+        self.device = device
 
-        # Dual variables (Lagrange multipliers, non-negative) - one scalar per constraint type
+        # Dual variables (Lagrange multipliers, non-negative) - per-sample vectors
         # We register them as buffers so they are moved to the correct device with the module,
         # but are not considered model parameters by the optimizer.
-        self.register_buffer('lam_dihedral', torch.tensor(0.00))
-        self.register_buffer('lam_gnn', torch.tensor(0.00))
-        self.register_buffer('lam_foldseek', torch.tensor(0.00))
+        self.register_buffer('lam_dihedral', torch.zeros(dataset_size, device=device))
+        self.register_buffer('lam_gnn', torch.zeros(dataset_size, device=device))
+        self.register_buffer('lam_foldseek', torch.zeros(dataset_size, device=device))
 
-    def compute_lagrangian(self, primary_loss, dihedral_losses, gnn_losses, foldseek_losses):
+    def compute_lagrangian(self, primary_loss, dihedral_losses, gnn_losses, foldseek_losses, indices):
         """
-        Compute the multi-constraint Lagrangian with batch-averaged constraints
+        Compute the multi-constraint Lagrangian with per-sample lambda vectors
 
         Args:
-            primary_loss: The main task loss (e.g., MLM loss)
+            primary_loss: The main task loss (e.g., MLM loss) - scalar
             dihedral_losses: Per-sample dihedral constraint losses (tensor of shape [batch_size])
             gnn_losses: Per-sample GNN alignment losses (tensor of shape [batch_size])
             foldseek_losses: Per-sample foldseek alignment losses (tensor of shape [batch_size])
+            indices: Indices of samples in the current batch (tensor of shape [batch_size])
         """
-        # Compute batch-averaged losses
-        avg_dihedral_loss = dihedral_losses.mean()
-        avg_gnn_loss = gnn_losses.mean()
-        avg_foldseek_loss = foldseek_losses.mean()
+        batch_size = dihedral_losses.shape[0]
+        
+        # Get per-sample lambdas for the current batch
+        lam_dihedral_batch = self.lam_dihedral[indices].detach()
+        lam_gnn_batch = self.lam_gnn[indices].detach()
+        lam_foldseek_batch = self.lam_foldseek[indices].detach()
 
-        # Compute constraint violations (batch average - epsilon)
-        # The lambdas are detached so that their gradients don't flow back to the primary loss.
-        dihedral_constraint_term = self.lam_dihedral.detach() * (avg_dihedral_loss - self.dihedral_epsilon)
-        gnn_constraint_term = self.lam_gnn.detach() * (avg_gnn_loss - self.gnn_epsilon)
-        foldseek_constraint_term = self.lam_foldseek.detach() * (avg_foldseek_loss - self.foldseek_epsilon)
+        # Compute per-sample constraint violations
+        dihedral_violation = dihedral_losses - self.dihedral_epsilon
+        gnn_violation = gnn_losses - self.gnn_epsilon
+        foldseek_violation = foldseek_losses - self.foldseek_epsilon
+
+        # Compute per-sample constraint terms
+        dihedral_constraint_term = lam_dihedral_batch * dihedral_violation
+        gnn_constraint_term = lam_gnn_batch * gnn_violation
+        foldseek_constraint_term = lam_foldseek_batch * foldseek_violation
+
+        # Average over batch to get scalar constraint terms
+        avg_dihedral_constraint = dihedral_constraint_term.mean()
+        avg_gnn_constraint = gnn_constraint_term.mean()
+        avg_foldseek_constraint = foldseek_constraint_term.mean()
 
         # Total constraint term
-        total_constraint_term = dihedral_constraint_term + gnn_constraint_term + foldseek_constraint_term
+        total_constraint_term = avg_dihedral_constraint + avg_gnn_constraint + avg_foldseek_constraint
 
         # Total Lagrangian
         lagrangian = primary_loss + total_constraint_term
 
         return lagrangian
 
-    def update_dual_variables(self, dihedral_losses, gnn_losses, foldseek_losses):
+    def update_dual_variables(self, dihedral_losses, gnn_losses, foldseek_losses, indices):
         """
-        Update Lagrange multipliers using projected gradient ascent on batch-averaged violations.
+        Update Lagrange multipliers using projected gradient ascent on per-sample violations.
+        Only updates the lambda entries corresponding to samples in the current batch.
         This is done with no_grad context and updates the buffers in-place.
 
         Args:
-            dihedral_losses: Per-sample dihedral constraint losses for the batch
-            gnn_losses: Per-sample GNN alignment losses for the batch
-            foldseek_losses: Per-sample foldseek alignment losses for the batch
+            dihedral_losses: Per-sample dihedral constraint losses for the batch (shape [batch_size])
+            gnn_losses: Per-sample GNN alignment losses for the batch (shape [batch_size])
+            foldseek_losses: Per-sample foldseek alignment losses for the batch (shape [batch_size])
+            indices: Indices of samples in the current batch (tensor of shape [batch_size])
         """
         with torch.no_grad():
-            # Calculate batch-averaged violations for each constraint type
-            avg_dihedral_loss = dihedral_losses.mean()
-            avg_gnn_loss = gnn_losses.mean()
-            avg_foldseek_loss = foldseek_losses.mean()
+            # Calculate per-sample violations for each constraint type
+            dihedral_violation = dihedral_losses - self.dihedral_epsilon
+            gnn_violation = gnn_losses - self.gnn_epsilon
+            foldseek_violation = foldseek_losses - self.foldseek_epsilon
 
-            dihedral_violation = avg_dihedral_loss - self.dihedral_epsilon
-            gnn_violation = avg_gnn_loss - self.gnn_epsilon
-            foldseek_violation = avg_foldseek_loss - self.foldseek_epsilon
+            # Update per-sample multipliers using projected gradient ascent
+            # Only update entries for samples in the current batch
+            new_lam_dihedral = (self.lam_dihedral[indices] + self.dual_lr * dihedral_violation).clamp(min=0.0)
+            new_lam_gnn = (self.lam_gnn[indices] + self.dual_lr * gnn_violation).clamp(min=0.0)
+            new_lam_foldseek = (self.lam_foldseek[indices] + self.dual_lr * foldseek_violation).clamp(min=0.0)
 
-            # Update scalar multipliers using projected gradient ascent
-            # Use clamp to ensure non-negative values (projection step)
-            self.lam_dihedral = (self.lam_dihedral + self.dual_lr * dihedral_violation).clamp(min=0.0)
-            self.lam_gnn = (self.lam_gnn + self.dual_lr * gnn_violation).clamp(min=0.0)
-            self.lam_foldseek = (self.lam_foldseek + self.dual_lr * foldseek_violation).clamp(min=0.0)
+            # Update the full lambda vectors at the specified indices
+            self.lam_dihedral[indices] = new_lam_dihedral
+            self.lam_gnn[indices] = new_lam_gnn
+            self.lam_foldseek[indices] = new_lam_foldseek
 
     def get_average_lambdas(self):
-        """Get the lambda values (now scalars, so no averaging needed)."""
+        """Get the average lambda values across all samples."""
         with torch.no_grad():
-            lam_dihedral = self.lam_dihedral.item()
-            lam_gnn = self.lam_gnn.item()
-            lam_foldseek = self.lam_foldseek.item()
+            lam_dihedral = self.lam_dihedral.mean().item()
+            lam_gnn = self.lam_gnn.mean().item()
+            lam_foldseek = self.lam_foldseek.mean().item()
         return lam_dihedral, lam_gnn, lam_foldseek
+    
+    def get_lambda_stats(self):
+        """Get statistics (mean, std, min, max) for lambda values across all samples."""
+        with torch.no_grad():
+            stats = {
+                'lam_dihedral_mean': self.lam_dihedral.mean().item(),
+                'lam_dihedral_std': self.lam_dihedral.std().item(),
+                'lam_dihedral_min': self.lam_dihedral.min().item(),
+                'lam_dihedral_max': self.lam_dihedral.max().item(),
+                'lam_gnn_mean': self.lam_gnn.mean().item(),
+                'lam_gnn_std': self.lam_gnn.std().item(),
+                'lam_gnn_min': self.lam_gnn.min().item(),
+                'lam_gnn_max': self.lam_gnn.max().item(),
+                'lam_foldseek_mean': self.lam_foldseek.mean().item(),
+                'lam_foldseek_std': self.lam_foldseek.std().item(),
+                'lam_foldseek_min': self.lam_foldseek.min().item(),
+                'lam_foldseek_max': self.lam_foldseek.max().item(),
+            }
+        return stats

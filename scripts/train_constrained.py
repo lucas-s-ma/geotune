@@ -123,22 +123,30 @@ def train_epoch(model, dataloader, optimizer, scheduler, lagrangian_module, dihe
                 primary_loss=mlm_loss,
                 dihedral_losses=per_sample_dihedral_losses,
                 gnn_losses=per_sample_gnn_losses,
-                foldseek_losses=per_sample_foldseek_losses
+                foldseek_losses=per_sample_foldseek_losses,
+                indices=indices
             )
 
             scaled_lagrangian = lagrangian / gradient_accumulation_steps
 
         # 4. Backward pass for gradients
-        scaler.scale(scaled_lagrangian).backward()
+        if scaler is not None:
+            scaler.scale(scaled_lagrangian).backward()
+        else:
+            scaled_lagrangian.backward()
 
         if (batch_idx + 1) % gradient_accumulation_steps == 0:
             # 5. Primal Update (Model Parameters) - UPDATE THETA FIRST
-            scaler.unscale_(optimizer)
+            if scaler is not None:
+                scaler.unscale_(optimizer)
             # Clip gradients for all trainable parameters in optimizer
             all_params = [p for group in optimizer.param_groups for p in group['params']]
             torch.nn.utils.clip_grad_norm_(all_params, max_norm=0.5)
-            scaler.step(optimizer)
-            scaler.update()
+            if scaler is not None:
+                scaler.step(optimizer)
+                scaler.update()
+            else:
+                optimizer.step()
             scheduler.step()
             optimizer.zero_grad()
 
@@ -147,7 +155,8 @@ def train_epoch(model, dataloader, optimizer, scheduler, lagrangian_module, dihe
             lagrangian_module.update_dual_variables(
                 per_sample_dihedral_losses,
                 per_sample_gnn_losses,
-                per_sample_foldseek_losses
+                per_sample_foldseek_losses,
+                indices
             )
 
         # Logging
@@ -158,16 +167,25 @@ def train_epoch(model, dataloader, optimizer, scheduler, lagrangian_module, dihe
         total_foldseek_loss += per_sample_foldseek_losses.mean().item()
 
         if batch_idx % 10 == 0 and config.logging.use_wandb:
-            avg_lam_dih, avg_lam_gnn, avg_lam_fs = lagrangian_module.get_average_lambdas()
+            lambda_stats = lagrangian_module.get_lambda_stats()
             wandb.log({
                 'train_batch/lagrangian_loss': lagrangian.item(),
                 'train_batch/mlm_loss': mlm_loss.item(),
                 'train_batch/dihedral_loss': per_sample_dihedral_losses.mean().item(),
                 'train_batch/gnn_loss': per_sample_gnn_losses.mean().item(),
                 'train_batch/foldseek_loss': per_sample_foldseek_losses.mean().item(),
-                'train_avg_lambda/dihedral': avg_lam_dih,
-                'train_avg_lambda/gnn': avg_lam_gnn,
-                'train_avg_lambda/foldseek': avg_lam_fs,
+                'train_lambda/dihedral_mean': lambda_stats['lam_dihedral_mean'],
+                'train_lambda/dihedral_std': lambda_stats['lam_dihedral_std'],
+                'train_lambda/dihedral_min': lambda_stats['lam_dihedral_min'],
+                'train_lambda/dihedral_max': lambda_stats['lam_dihedral_max'],
+                'train_lambda/gnn_mean': lambda_stats['lam_gnn_mean'],
+                'train_lambda/gnn_std': lambda_stats['lam_gnn_std'],
+                'train_lambda/gnn_min': lambda_stats['lam_gnn_min'],
+                'train_lambda/gnn_max': lambda_stats['lam_gnn_max'],
+                'train_lambda/foldseek_mean': lambda_stats['lam_foldseek_mean'],
+                'train_lambda/foldseek_std': lambda_stats['lam_foldseek_std'],
+                'train_lambda/foldseek_min': lambda_stats['lam_foldseek_min'],
+                'train_lambda/foldseek_max': lambda_stats['lam_foldseek_max'],
                 'learning_rate': scheduler.get_last_lr()[0]
             })
 
@@ -249,26 +267,33 @@ def validate(model, dataloader, dihedral_module, alignment_module, gnn_module, d
 
 def log_lambda_distributions(lagrangian_module, epoch, config):
     """
-    Log scalar lambda values during training (batch-averaged constraints).
+    Log lambda statistics (mean, std, min, max) during training for per-sample lambda vectors.
 
     Args:
-        lagrangian_module: MultiConstraintLagrangian instance with lambda values
+        lagrangian_module: MultiConstraintLagrangian instance with lambda vectors
         epoch: Current epoch number
         config: Config object for logging settings
     """
     if not config.logging.use_wandb:
         return
 
-    # Get scalar lambda values
-    lam_dihedral = lagrangian_module.lam_dihedral.item()
-    lam_gnn = lagrangian_module.lam_gnn.item()
-    lam_foldseek = lagrangian_module.lam_foldseek.item()
+    # Get lambda statistics
+    lambda_stats = lagrangian_module.get_lambda_stats()
 
-    # Log scalar values to wandb
+    # Log statistics to wandb
     wandb.log({
-        'lambda_values/dihedral': lam_dihedral,
-        'lambda_values/gnn': lam_gnn,
-        'lambda_values/foldseek': lam_foldseek,
+        'lambda_stats/dihedral_mean': lambda_stats['lam_dihedral_mean'],
+        'lambda_stats/dihedral_std': lambda_stats['lam_dihedral_std'],
+        'lambda_stats/dihedral_min': lambda_stats['lam_dihedral_min'],
+        'lambda_stats/dihedral_max': lambda_stats['lam_dihedral_max'],
+        'lambda_stats/gnn_mean': lambda_stats['lam_gnn_mean'],
+        'lambda_stats/gnn_std': lambda_stats['lam_gnn_std'],
+        'lambda_stats/gnn_min': lambda_stats['lam_gnn_min'],
+        'lambda_stats/gnn_max': lambda_stats['lam_gnn_max'],
+        'lambda_stats/foldseek_mean': lambda_stats['lam_foldseek_mean'],
+        'lambda_stats/foldseek_std': lambda_stats['lam_foldseek_std'],
+        'lambda_stats/foldseek_min': lambda_stats['lam_foldseek_min'],
+        'lambda_stats/foldseek_max': lambda_stats['lam_foldseek_max'],
         'epoch': epoch
     })
 
@@ -389,11 +414,13 @@ def main():
 
     # --- Constrained Learning Setup ---
     lagrangian_module = MultiConstraintLagrangian(
+        dataset_size=train_size,
         dihedral_epsilon=config.training.dihedral_epsilon,
         gnn_epsilon=config.training.gnn_epsilon,
         foldseek_epsilon=config.training.foldseek_epsilon,
-        dual_lr=config.training.dual_learning_rate
-    ).to(device)
+        dual_lr=config.training.dual_learning_rate,
+        device=device
+    )
 
     # --- Optimizer, Scheduler, and Scaler ---
     # Collect all trainable parameters from model, dihedral module, and alignment module
@@ -465,17 +492,24 @@ def main():
     print(f"Final LoRA adapters saved to {final_dir}")
 
     if config.logging.use_wandb:
-        # Log final scalar lambda values
-        final_lam_dihedral = lagrangian_module.lam_dihedral.item()
-        final_lam_gnn = lagrangian_module.lam_gnn.item()
-        final_lam_foldseek = lagrangian_module.lam_foldseek.item()
+        # Log final lambda statistics
+        lambda_stats = lagrangian_module.get_lambda_stats()
 
         wandb.log({
-            "final_lambda_values/dihedral": final_lam_dihedral,
-            "final_lambda_values/gnn": final_lam_gnn,
-            "final_lambda_values/foldseek": final_lam_foldseek
+            "final_lambda_stats/dihedral_mean": lambda_stats['lam_dihedral_mean'],
+            "final_lambda_stats/dihedral_std": lambda_stats['lam_dihedral_std'],
+            "final_lambda_stats/dihedral_min": lambda_stats['lam_dihedral_min'],
+            "final_lambda_stats/dihedral_max": lambda_stats['lam_dihedral_max'],
+            "final_lambda_stats/gnn_mean": lambda_stats['lam_gnn_mean'],
+            "final_lambda_stats/gnn_std": lambda_stats['lam_gnn_std'],
+            "final_lambda_stats/gnn_min": lambda_stats['lam_gnn_min'],
+            "final_lambda_stats/gnn_max": lambda_stats['lam_gnn_max'],
+            "final_lambda_stats/foldseek_mean": lambda_stats['lam_foldseek_mean'],
+            "final_lambda_stats/foldseek_std": lambda_stats['lam_foldseek_std'],
+            "final_lambda_stats/foldseek_min": lambda_stats['lam_foldseek_min'],
+            "final_lambda_stats/foldseek_max": lambda_stats['lam_foldseek_max'],
         })
-        print(f"Final lambda values - Dihedral: {final_lam_dihedral:.4f}, GNN: {final_lam_gnn:.4f}, Foldseek: {final_lam_foldseek:.4f}")
+        print(f"Final lambda statistics - Dihedral: mean={lambda_stats['lam_dihedral_mean']:.4f}, GNN: mean={lambda_stats['lam_gnn_mean']:.4f}, Foldseek: mean={lambda_stats['lam_foldseek_mean']:.4f}")
 
     if config.logging.use_wandb: wandb.finish()
     print("\nTraining completed!")
