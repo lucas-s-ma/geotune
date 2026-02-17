@@ -44,6 +44,9 @@ def parse_args():
     parser.add_argument("--dihedral_epsilon", type=float, default=0.1, help="Epsilon (upper bound) for the dihedral angle constraint.")
     parser.add_argument("--gnn_epsilon", type=float, default=7.0, help="Epsilon (upper bound) for the GNN (latent) structure alignment constraint.")
     parser.add_argument("--foldseek_epsilon", type=float, default=3.0, help="Epsilon (upper bound) for the Foldseek (physical) structure alignment constraint.")
+    
+    # --- Data fraction for fast iteration ---
+    parser.add_argument("--train_fraction", type=float, default=0.8, help="Fraction of data to use for training (default: 0.8, use 0.1 for fast iteration).")
 
     return parser.parse_args()
 
@@ -404,17 +407,19 @@ def main():
         alignment_module = None
 
     full_dataset = EfficientProteinDataset(config.data.data_path, max_seq_len=config.training.max_seq_len, include_structural_tokens=True, load_embeddings=load_embeddings)
-    train_size = int(0.8 * len(full_dataset))
+    train_size = int(args.train_fraction * len(full_dataset))
     val_size = len(full_dataset) - train_size
     train_dataset, val_dataset = torch.utils.data.random_split(full_dataset, [train_size, val_size], generator=torch.Generator().manual_seed(config.training.seed))
 
     train_loader = DataLoader(train_dataset, batch_size=config.training.batch_size, shuffle=True, collate_fn=collate_fn, num_workers=4, pin_memory=True)
     val_loader = DataLoader(val_dataset, batch_size=config.training.batch_size, shuffle=False, collate_fn=collate_fn, num_workers=2)
     print(f"Dataset split: {train_size} training, {val_size} validation samples.")
+    print(f"Using {args.train_fraction * 100:.0f}% of data for training.")
 
     # --- Constrained Learning Setup ---
+    # Use full dataset size for lambda vectors since indices are global (from original dataset)
     lagrangian_module = MultiConstraintLagrangian(
-        dataset_size=train_size,
+        dataset_size=len(full_dataset),
         dihedral_epsilon=config.training.dihedral_epsilon,
         gnn_epsilon=config.training.gnn_epsilon,
         foldseek_epsilon=config.training.foldseek_epsilon,
