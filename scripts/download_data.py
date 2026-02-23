@@ -27,9 +27,19 @@ def download_protein_data(pdb_ids, output_dir, include_chains=None):
     
     for pdb_id in tqdm(pdb_ids, desc="Downloading PDB files"):
         pdb_id = pdb_id.strip().upper()
-        
+
+        # Check for both naming conventions
         new_path = os.path.join(output_dir, f"{pdb_id}.pdb")
+        print(pdb_id)
+        old_path_check = os.path.join(output_dir, f"pdb{pdb_id.lower()}.ent")
+        
         if os.path.exists(new_path):
+            success_count += 1
+            continue
+        
+        if os.path.exists(old_path_check):
+            # File was downloaded but not renamed - rename it now
+            os.rename(old_path_check, new_path)
             success_count += 1
             continue
 
@@ -45,8 +55,8 @@ def download_protein_data(pdb_ids, output_dir, include_chains=None):
                     continue
             else:
                 continue
-            
-            pdbl.retrieve_pdb_file(pdb_id, pdir=output_dir, file_format='pdb', overwrite=True)
+
+            pdbl.retrieve_pdb_file(pdb_id, pdir=output_dir, file_format='pdb', overwrite=False)
             
             old_path = os.path.join(output_dir, f"pdb{pdb_id.lower()}.ent")
             if os.path.exists(old_path):

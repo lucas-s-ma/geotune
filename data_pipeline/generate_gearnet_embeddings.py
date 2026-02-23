@@ -121,6 +121,7 @@ def generate_gearnet_embeddings_for_dataset(processed_dataset_path, output_dir, 
         max_proteins: Maximum number of proteins to process (for testing). If None, process all.
     """
     print(f"Generating GearNet embeddings from {processed_dataset_path}")
+    print(f"Output directory: {output_dir}")
     print(f"Processing in chunks of {chunk_size} proteins to manage memory")
     print(f"Hidden dimension: {hidden_dim}")
 
@@ -152,6 +153,18 @@ def generate_gearnet_embeddings_for_dataset(processed_dataset_path, output_dir, 
 
     print(f"Total proteins to process: {total_proteins}")
 
+    # Check for existing embeddings to skip
+    os.makedirs(output_dir, exist_ok=True)
+    existing_embedding_files = [f for f in os.listdir(output_dir) if f.endswith('_gearnet_embeddings.pkl')]
+    existing_protein_ids = set()
+    for ef in existing_embedding_files:
+        # Extract protein ID from filename (e.g., "1TIM_gearnet_embeddings.pkl" -> "1TIM")
+        pid = ef.replace('_gearnet_embeddings.pkl', '')
+        existing_protein_ids.add(pid)
+    
+    print(f"Found {len(existing_protein_ids)} existing embeddings in {output_dir}")
+    print("These will be skipped to avoid re-computation")
+
     # Initialize the GearNet model (will try to use proper implementation first)
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     print(f"Using device: {device}")
@@ -179,12 +192,10 @@ def generate_gearnet_embeddings_for_dataset(processed_dataset_path, output_dir, 
 
     model.eval()  # Set to evaluation mode
 
-    # Create output directory
-    os.makedirs(output_dir, exist_ok=True)
-
     # Process proteins in chunks to manage memory
     successful_count = 0
     failed_count = 0
+    skipped_count = 0
     chunk_count = 0
 
     import time
@@ -199,6 +210,11 @@ def generate_gearnet_embeddings_for_dataset(processed_dataset_path, output_dir, 
             protein_id = protein['id']
             protein_start_time = time.time()
 
+            # Skip if embedding already exists
+            if protein_id in existing_protein_ids:
+                skipped_count += 1
+                continue
+
             try:
                 n_coords = protein['n_coords']  # (seq_len, 3)
                 ca_coords = protein['ca_coords']  # (seq_len, 3)
@@ -212,6 +228,7 @@ def generate_gearnet_embeddings_for_dataset(processed_dataset_path, output_dir, 
                 # Save individual embedding file immediately to free memory
                 output_file = os.path.join(output_dir, f"{protein_id}_gearnet_embeddings.pkl")
                 save_embeddings_file(output_file, protein_id, embeddings, embeddings.shape[0])
+                existing_protein_ids.add(protein_id)  # Add to set to track within this run
 
                 successful_count += 1
                 protein_time = time.time() - protein_start_time
@@ -219,13 +236,13 @@ def generate_gearnet_embeddings_for_dataset(processed_dataset_path, output_dir, 
                 # Show progress with timing every 10 proteins
                 if (successful_count + failed_count) % 10 == 0:
                     elapsed = time.time() - start_time
-                    avg_time_per_protein = elapsed / (successful_count + failed_count)
-                    remaining_proteins = total_proteins - (successful_count + failed_count)
+                    avg_time_per_protein = elapsed / (successful_count + failed_count + skipped_count)
+                    remaining_proteins = total_proteins - (successful_count + failed_count + skipped_count)
                     eta_seconds = avg_time_per_protein * remaining_proteins
                     eta_hours = eta_seconds / 3600
 
-                    print(f"\nProgress: {successful_count + failed_count}/{total_proteins} proteins")
-                    print(f"  Success: {successful_count}, Failed: {failed_count}")
+                    print(f"\nProgress: {successful_count + failed_count + skipped_count}/{total_proteins} proteins")
+                    print(f"  New: {successful_count}, Failed: {failed_count}, Skipped: {skipped_count}")
                     print(f"  Avg time/protein: {avg_time_per_protein:.2f}s")
                     print(f"  ETA: {eta_hours:.2f} hours ({eta_seconds/60:.1f} minutes)")
 
@@ -252,18 +269,23 @@ def generate_gearnet_embeddings_for_dataset(processed_dataset_path, output_dir, 
         gc.collect()
 
     print(f"\nProcessing completed!")
-    print(f"Successful: {successful_count} proteins")
+    print(f"New embeddings generated: {successful_count} proteins")
     print(f"Failed: {failed_count} proteins")
-    print(f"Total attempts: {successful_count + failed_count}")
+    print(f"Skipped (already existed): {skipped_count} proteins")
+    print(f"Total: {successful_count + failed_count + skipped_count}/{total_proteins} proteins")
 
     # Create a simple summary file
     summary_file = os.path.join(output_dir, "generation_summary.txt")
     with open(summary_file, 'w') as f:
         f.write(f"GearNet Embeddings Generation Summary\n")
         f.write(f"Total proteins in input: {total_proteins}\n")
-        f.write(f"Successfully processed: {successful_count}\n")
-        f.write(f"Failed to process: {failed_count}\n")
-        f.write(f"Success rate: {successful_count/total_proteins*100:.2f}% if total_proteins > 0 else 0%\n")
+        f.write(f"New embeddings generated: {successful_count}\n")
+        f.write(f"Failed: {failed_count}\n")
+        f.write(f"Skipped (already existed): {skipped_count}\n")
+        if total_proteins > 0:
+            f.write(f"Success rate: {successful_count/total_proteins*100:.2f}%\n")
+        else:
+            f.write(f"Success rate: N/A\n")
         f.write(f"Output directory: {output_dir}\n")
 
     return successful_count
