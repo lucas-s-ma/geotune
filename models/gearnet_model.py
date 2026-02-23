@@ -180,7 +180,7 @@ class GearNetFromCoordinates(nn.Module):
             non_zero_mask = ca_coords[b].abs().sum(dim=1) > 0
             original_len = non_zero_mask.sum().item()
             original_lengths.append(original_len)
-
+            
             node_pos = ca_coords[b][:original_len]
 
             edge_list = []
@@ -192,22 +192,16 @@ class GearNetFromCoordinates(nn.Module):
                         relation_type = 3 + offset if offset > 0 else 2 + offset
                         edge_list.append([i, j, relation_type])
 
-            # KNN-based edges (with robust handling of edge cases)
+            # KNN-based edges
             if original_len > 1:
                 dist_matrix = torch.cdist(node_pos, node_pos)
-                
-                # Check for NaN/Inf in distance matrix (caused by invalid coordinates)
-                if torch.isfinite(dist_matrix).all():
-                    k = min(10, original_len - 1)
-                    if k > 0:
-                        _, topk_indices = torch.topk(dist_matrix, k + 1, largest=False)
-                        for i in range(original_len):
-                            for j_idx in range(1, k + 1):
-                                j = topk_indices[i, j_idx].item()
-                                # Validate index is within bounds
-                                if 0 <= j < original_len:
-                                    edge_list.append([i, j, 6])  # Relation type 6 for KNN
-
+                k = min(10, original_len - 1)
+                if k > 0:
+                    _, topk_indices = torch.topk(dist_matrix, k + 1, largest=False)
+                    for i in range(original_len):
+                        for j in topk_indices[i, 1:]:
+                            edge_list.append([i, j.item(), 6]) # Relation type 6 for KNN
+            
             if not edge_list:
                 edge_list.append([0, 0, 0])
 

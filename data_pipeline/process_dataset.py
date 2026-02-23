@@ -1,15 +1,15 @@
 """
 Process raw protein structure data for training
 This script processes PDB files into a format suitable for the GeoTune model.
+
+Supports both full processing and incremental processing (adding new proteins
+without re-processing existing ones).
 """
 import os
 import sys
 import argparse
 import numpy as np
 from Bio.PDB import PDBParser
-# Note: Bio.PDB imports are likely inside your data_utils, which is good practice.
-# from Bio.PDB import PDBParser
-# from Bio.PDB.DSSP import DSSP
 from pathlib import Path
 import pickle
 import json
@@ -48,45 +48,11 @@ def create_efficient_dataset(raw_dir, output_dir, include_structural_tokens=True
 
     print(f"Found {len(pdb_files)} PDB files to process")
 
-    # Load existing dataset if it exists (to skip already-processed proteins)
-    os.makedirs(output_dir, exist_ok=True)
-    dataset_file = os.path.join(output_dir, "processed_dataset.pkl")
-    existing_proteins = {}
-    
-    if os.path.exists(dataset_file):
-        print(f"Found existing dataset at {dataset_file}")
-        print("Loading existing proteins to avoid re-processing...")
-        with open(dataset_file, 'rb') as f:
-            existing_list = pickle.load(f)
-        for protein in existing_list:
-            existing_proteins[protein['id']] = protein
-        print(f"Loaded {len(existing_proteins)} existing proteins")
-
-    # Load existing structural tokens if they exist
-    struct_token_file = os.path.join(output_dir, "structural_tokens.pkl")
-    existing_tokens = {}
-    if os.path.exists(struct_token_file) and include_structural_tokens:
-        print(f"Found existing structural tokens at {struct_token_file}")
-        print("Loading existing tokens to avoid re-generation...")
-        with open(struct_token_file, 'rb') as f:
-            tokens_list = pickle.load(f)
-        for token_item in tokens_list:
-            existing_tokens[token_item['protein_id']] = token_item['structural_tokens']
-        print(f"Loaded {len(existing_tokens)} existing structural token sets")
-
     # Process proteins one by one to avoid memory issues
-    proteins = list(existing_proteins.values())  # Start with existing proteins
-    new_proteins_count = 0
-    skipped_count = len(existing_proteins)
+    proteins = []
     parser = PDBParser(QUIET=True)
 
     for i, pdb_file in enumerate(tqdm(pdb_files, desc="Processing PDB files")):
-        pdb_id = os.path.splitext(os.path.basename(pdb_file))[0].upper()
-        
-        # Skip if already processed
-        if pdb_id in existing_proteins:
-            continue
-        
         try:
             # Parse PDB file directly without loading all into memory
             protein_data = extract_protein_info_single(parser, pdb_file)
@@ -99,30 +65,21 @@ def create_efficient_dataset(raw_dir, output_dir, include_structural_tokens=True
                     else:
                         safe_protein[key] = value
                 proteins.append(safe_protein)
-                new_proteins_count += 1
-                print(f"  Processed {protein_data['id']} (NEW)")
+                print(f"  Processed {protein_data['id']}")
             else:
                 print(f"  Failed to process {pdb_file}")
         except Exception as e:
             print(f"  Error processing {pdb_file}: {e}")
 
-    print(f"\nProcessed {new_proteins_count} new proteins, skipped {skipped_count} already-processed proteins")
-    print(f"Total proteins in dataset: {len(proteins)}")
+    print(f"Processed {len(proteins)} proteins from PDB files")
 
     # Generate structural tokens if requested
-    structural_tokens_list = list(existing_tokens.items())  # Start with existing tokens (as tuples)
-    new_tokens_count = 0
-    skipped_tokens_count = len(existing_tokens)
-    
     if include_structural_tokens:
-        print("\nGenerating Foldseek structural tokens for each protein...")
+        print("Generating Foldseek structural tokens for each protein...")
+        structural_tokens_list = []
 
         for i, pdb_file in enumerate(tqdm(pdb_files, desc="Generating Foldseek structural tokens")):
             pdb_name = os.path.splitext(os.path.basename(pdb_file))[0]
-
-            # Skip if tokens already exist
-            if pdb_name in existing_tokens:
-                continue
 
             # Find corresponding protein data in the processed dataset
             protein_data = None
@@ -140,8 +97,7 @@ def create_efficient_dataset(raw_dir, output_dir, include_structural_tokens=True
                             'protein_id': pdb_name,
                             'structural_tokens': tokens
                         })
-                        new_tokens_count += 1
-                        print(f"  Generated {len(tokens)} tokens for {pdb_name} (NEW)")
+                        print(f"  Generated {len(tokens)} tokens for {pdb_name}")
                     else:
                         print(f"  Failed to generate tokens for {pdb_name}")
                 except Exception as e:
@@ -149,15 +105,15 @@ def create_efficient_dataset(raw_dir, output_dir, include_structural_tokens=True
             else:
                 print(f"No protein data found for {pdb_name}")
 
-        print(f"\nGenerated {new_tokens_count} new structural token sets, skipped {skipped_tokens_count} existing")
-        print(f"Total structural token sets: {len(structural_tokens_list)}")
-
     # Save the entire processed dataset to a single file
     # Handle numpy arrays properly to avoid pickling issues
+    os.makedirs(output_dir, exist_ok=True)
+    dataset_file = os.path.join(output_dir, "processed_dataset.pkl")
+
     with open(dataset_file, 'wb') as f:
         pickle.dump(proteins, f)
 
-    print(f"\nSaved processed dataset to {dataset_file} with {len(proteins)} proteins")
+    print(f"Saved processed dataset to {dataset_file} with {len(proteins)} proteins")
 
     # Also create a mapping file that maps indices to protein IDs
     id_mapping = {}
@@ -172,17 +128,10 @@ def create_efficient_dataset(raw_dir, output_dir, include_structural_tokens=True
 
     # Save structural tokens if generated
     if include_structural_tokens and len(structural_tokens_list) > 0:
-        # Convert list of tuples back to list of dicts for saving
-        tokens_to_save = []
-        for item in structural_tokens_list:
-            if isinstance(item, tuple):
-                tokens_to_save.append({'protein_id': item[0], 'structural_tokens': item[1]})
-            else:
-                tokens_to_save.append(item)
-        
+        struct_token_file = os.path.join(output_dir, "structural_tokens.pkl")
         # Handle structural tokens with the same approach for safe pickling
         safe_structural_tokens = []
-        for item in tokens_to_save:
+        for item in structural_tokens_list:
             safe_item = {}
             for key, value in item.items():
                 if isinstance(value, np.ndarray):
@@ -192,7 +141,7 @@ def create_efficient_dataset(raw_dir, output_dir, include_structural_tokens=True
             safe_structural_tokens.append(safe_item)
         with open(struct_token_file, 'wb') as f:
             pickle.dump(safe_structural_tokens, f)
-        print(f"Saved structural tokens for {len(safe_structural_tokens)} proteins to {struct_token_file}")
+        print(f"Saved structural tokens for {len(structural_tokens_list)} proteins to {struct_token_file}")
 
     return dataset_file, mapping_file
 
@@ -441,6 +390,312 @@ def validate_processed_data(processed_dir):
     return valid_count > 0
 
 
+def get_existing_protein_ids(processed_dir: str) -> set:
+    """
+    Get set of protein IDs already in the processed dataset
+
+    Args:
+        processed_dir: Directory containing processed_dataset.pkl
+
+    Returns:
+        Set of existing protein IDs
+    """
+    dataset_file = os.path.join(processed_dir, "processed_dataset.pkl")
+
+    if not os.path.exists(dataset_file):
+        return set()
+
+    print(f"Loading existing dataset from {dataset_file}...")
+    with open(dataset_file, 'rb') as f:
+        proteins = pickle.load(f)
+
+    protein_ids = {p['id'] for p in proteins if 'id' in p}
+    print(f"Found {len(protein_ids)} existing proteins in dataset")
+    return protein_ids
+
+
+def get_new_pdb_files(new_pdb_dir: str, existing_ids: set) -> list:
+    """
+    Get list of new PDB files that aren't in the existing dataset
+
+    Args:
+        new_pdb_dir: Directory containing new PDB files
+        existing_ids: Set of protein IDs already processed
+
+    Returns:
+        List of paths to new PDB files
+    """
+    new_files = []
+
+    if not os.path.exists(new_pdb_dir):
+        print(f"Warning: New PDB directory {new_pdb_dir} does not exist")
+        return new_files
+
+    for filename in os.listdir(new_pdb_dir):
+        if filename.lower().endswith('.pdb'):
+            protein_id = filename.replace('.pdb', '')
+            if protein_id not in existing_ids:
+                new_files.append(os.path.join(new_pdb_dir, filename))
+            else:
+                print(f"  Skipping {filename} (already processed)")
+
+    print(f"Found {len(new_files)} new PDB files to process")
+    return new_files
+
+
+def process_new_proteins(new_pdb_files: list, parser: PDBParser) -> list:
+    """
+    Process new PDB files into protein data
+
+    Args:
+        new_pdb_files: List of PDB file paths to process
+        parser: PDBParser instance
+
+    Returns:
+        List of processed protein data dictionaries
+    """
+    proteins = []
+
+    for pdb_file in tqdm(new_pdb_files, desc="Processing new PDB files"):
+        try:
+            protein_data = extract_protein_info_single(parser, pdb_file)
+            if protein_data is not None:
+                # Handle numpy arrays for safe pickling
+                safe_protein = {}
+                for key, value in protein_data.items():
+                    if isinstance(value, np.ndarray):
+                        safe_protein[key] = np.array(value, copy=True)
+                    else:
+                        safe_protein[key] = value
+                proteins.append(safe_protein)
+                print(f"  ✓ Processed {protein_data['id']} (length: {len(protein_data['sequence'])})")
+            else:
+                print(f"  ✗ Failed to process {pdb_file}")
+        except Exception as e:
+            print(f"  ✗ Error processing {pdb_file}: {e}")
+
+    return proteins
+
+
+def append_to_dataset(new_proteins: list, processed_dir: str) -> tuple:
+    """
+    Append new proteins to the existing dataset
+
+    Args:
+        new_proteins: List of new protein data dictionaries
+        processed_dir: Directory containing processed_dataset.pkl
+
+    Returns:
+        Tuple of (total_count, dataset_file)
+    """
+    os.makedirs(processed_dir, exist_ok=True)
+    dataset_file = os.path.join(processed_dir, "processed_dataset.pkl")
+    mapping_file = os.path.join(processed_dir, "id_mapping.json")
+
+    # Load existing proteins if dataset exists
+    existing_proteins = []
+    if os.path.exists(dataset_file):
+        print(f"Loading existing dataset...")
+        with open(dataset_file, 'rb') as f:
+            existing_proteins = pickle.load(f)
+        print(f"Loaded {len(existing_proteins)} existing proteins")
+
+    # Combine existing and new proteins
+    all_proteins = existing_proteins + new_proteins
+    print(f"Total proteins after merge: {len(all_proteins)}")
+
+    # Save updated dataset
+    print(f"Saving updated dataset to {dataset_file}...")
+    with open(dataset_file, 'wb') as f:
+        pickle.dump(all_proteins, f)
+
+    # Update ID mapping
+    id_mapping = {i: p['id'] for i, p in enumerate(all_proteins)}
+    with open(mapping_file, 'w') as f:
+        json.dump(id_mapping, f)
+
+    print(f"Updated ID mapping saved to {mapping_file}")
+
+    return len(all_proteins), dataset_file
+
+
+def append_structural_tokens(new_proteins: list, new_pdb_dir: str, processed_dir: str) -> int:
+    """
+    Generate and append structural tokens for new proteins only
+
+    Args:
+        new_proteins: List of new protein data dictionaries
+        new_pdb_dir: Directory containing new PDB files
+        processed_dir: Directory containing structural_tokens.pkl
+
+    Returns:
+        Number of new tokens generated
+    """
+    if not check_foldseek_installation():
+        print("Foldseek not available, skipping structural token generation")
+        return 0
+
+    print(f"\nGenerating structural tokens for {len(new_proteins)} new proteins...")
+
+    # Load existing tokens if they exist
+    existing_tokens = []
+    struct_token_file = os.path.join(processed_dir, "structural_tokens.pkl")
+
+    if os.path.exists(struct_token_file):
+        print(f"Loading existing structural tokens...")
+        with open(struct_token_file, 'rb') as f:
+            existing_tokens = pickle.load(f)
+        print(f"Loaded {len(existing_tokens)} existing tokens")
+
+    # Create PDB path mapping
+    pdb_path_map = {}
+    if os.path.exists(new_pdb_dir):
+        for filename in os.listdir(new_pdb_dir):
+            if filename.lower().endswith('.pdb'):
+                protein_id = filename.replace('.pdb', '')
+                pdb_path_map[protein_id] = os.path.join(new_pdb_dir, filename)
+
+    # Generate tokens for new proteins
+    new_tokens = []
+    for protein in tqdm(new_proteins, desc="Generating structural tokens"):
+        protein_id = protein['id']
+
+        if protein_id in pdb_path_map:
+            pdb_path = pdb_path_map[protein_id]
+            try:
+                tokens = generate_foldseek_tokens(pdb_path)
+                if tokens is not None and len(tokens) > 0:
+                    new_tokens.append({
+                        'protein_id': protein_id,
+                        'structural_tokens': tokens
+                    })
+                    print(f"  ✓ Generated {len(tokens)} tokens for {protein_id}")
+                else:
+                    print(f"  ✗ Failed to generate tokens for {protein_id}")
+            except Exception as e:
+                print(f"  ✗ Error generating tokens for {protein_id}: {e}")
+        else:
+            print(f"  ⚠ PDB file not found for {protein_id}")
+
+    # Combine and save
+    all_tokens = existing_tokens + new_tokens
+
+    if len(all_tokens) > 0:
+        print(f"Saving {len(all_tokens)} total structural tokens...")
+        with open(struct_token_file, 'wb') as f:
+            pickle.dump(all_tokens, f)
+        print(f"Saved structural tokens to {struct_token_file}")
+
+    return len(new_tokens)
+
+
+def incremental_processing(new_pdb_dir: str, processed_dir: str,
+                          include_structural_tokens: bool = True,
+                          generate_gearnet: bool = False,
+                          hidden_dim: int = 512) -> dict:
+    """
+    Process only new PDB files and append to existing dataset
+
+    Args:
+        new_pdb_dir: Directory containing new PDB files
+        processed_dir: Directory containing existing processed dataset
+        include_structural_tokens: Whether to generate structural tokens
+        generate_gearnet: Whether to generate GearNet embeddings
+        hidden_dim: Hidden dimension for GearNet embeddings
+
+    Returns:
+        Dictionary with processing statistics
+    """
+    print("=" * 80)
+    print("INCREMENTAL PROCESSING MODE")
+    print("=" * 80)
+    print(f"New PDB directory: {new_pdb_dir}")
+    print(f"Processed directory: {processed_dir}")
+    print("=" * 80)
+
+    stats = {
+        'new_proteins_processed': 0,
+        'total_proteins': 0,
+        'new_tokens_generated': 0,
+        'new_embeddings_generated': 0
+    }
+
+    # Step 1: Get existing protein IDs
+    existing_ids = get_existing_protein_ids(processed_dir)
+
+    # Step 2: Find new PDB files
+    new_pdb_files = get_new_pdb_files(new_pdb_dir, existing_ids)
+
+    if not new_pdb_files:
+        print("\n✓ No new proteins to process!")
+        return stats
+
+    print(f"\n{len(new_pdb_files)} new proteins to process")
+
+    # Step 3: Process new proteins
+    print("\n" + "=" * 80)
+    print("STEP 1: Processing new proteins")
+    print("=" * 80)
+    parser = PDBParser(QUIET=True)
+    new_proteins = process_new_proteins(new_pdb_files, parser)
+
+    if not new_proteins:
+        print("\n✗ No proteins were successfully processed!")
+        return stats
+
+    stats['new_proteins_processed'] = len(new_proteins)
+    print(f"\n✓ Successfully processed {len(new_proteins)} new proteins")
+
+    # Step 4: Append to dataset
+    print("\n" + "=" * 80)
+    print("STEP 2: Appending to dataset")
+    print("=" * 80)
+    total_count, dataset_file = append_to_dataset(new_proteins, processed_dir)
+    stats['total_proteins'] = total_count
+    print(f"✓ Dataset updated: {total_count} total proteins")
+
+    # Step 5: Generate structural tokens (optional)
+    if include_structural_tokens:
+        print("\n" + "=" * 80)
+        print("STEP 3: Generating structural tokens")
+        print("=" * 80)
+        tokens_count = append_structural_tokens(new_proteins, new_pdb_dir, processed_dir)
+        stats['new_tokens_generated'] = tokens_count
+        print(f"✓ Generated {tokens_count} new structural tokens")
+
+    # Step 6: Generate GearNet embeddings (optional)
+    if generate_gearnet:
+        print("\n" + "=" * 80)
+        print("STEP 4: Generating GearNet embeddings")
+        print("=" * 80)
+
+        # Import and use the existing function from generate_gearnet_embeddings.py
+        try:
+            from .generate_gearnet_embeddings import generate_gearnet_embeddings_for_new_proteins
+        except ImportError:
+            from generate_gearnet_embeddings import generate_gearnet_embeddings_for_new_proteins
+
+        embeddings_count = generate_gearnet_embeddings_for_new_proteins(
+            new_proteins, processed_dir, hidden_dim
+        )
+        stats['new_embeddings_generated'] = embeddings_count
+        print(f"✓ Generated {embeddings_count} new embeddings")
+
+    # Summary
+    print("\n" + "=" * 80)
+    print("INCREMENTAL PROCESSING COMPLETE")
+    print("=" * 80)
+    print(f"New proteins processed: {stats['new_proteins_processed']}")
+    print(f"Total proteins in dataset: {stats['total_proteins']}")
+    if include_structural_tokens:
+        print(f"New structural tokens: {stats['new_tokens_generated']}")
+    if generate_gearnet:
+        print(f"New embeddings: {stats['new_embeddings_generated']}")
+    print("=" * 80)
+
+    return stats
+
+
 def main():
     parser = argparse.ArgumentParser(description="Process raw protein structure data for GeoTune training")
     parser.add_argument("--raw_dir", type=str, required=True,
@@ -457,11 +712,45 @@ def main():
                         help="Skip generation of structural tokens (for faster processing)")
     parser.add_argument("--generate_gearnet_embeddings", action="store_true",
                         help="Generate GearNet embeddings for processed proteins")
+    # Incremental processing arguments
+    parser.add_argument("--incremental", action="store_true",
+                        help="Enable incremental processing mode (add new proteins without re-processing existing ones)")
+    parser.add_argument("--hidden_dim", type=int, default=512,
+                        help="Hidden dimension for GearNet embeddings (default: 512, match your ESM2 model: 8M=320, 35M=480, 150M=640, 650M=1280)")
 
     args = parser.parse_args()
 
     print(f"Processing data from {args.raw_dir} to {args.output_dir}")
 
+    # Incremental processing mode - add new proteins to existing dataset
+    if args.incremental:
+        print("\n" + "=" * 80)
+        print("INCREMENTAL PROCESSING MODE")
+        print("=" * 80)
+        print("This will add new proteins from --raw_dir to the existing dataset in --output_dir")
+        print("Existing proteins will NOT be re-processed")
+        print("=" * 80 + "\n")
+
+        include_tokens = not args.no_structural_tokens
+
+        stats = incremental_processing(
+            new_pdb_dir=args.raw_dir,
+            processed_dir=args.output_dir,
+            include_structural_tokens=include_tokens,
+            generate_gearnet=args.generate_gearnet_embeddings,
+            hidden_dim=args.hidden_dim
+        )
+
+        # Optionally validate after incremental processing
+        if args.validate:
+            print("\n" + "=" * 80)
+            print("VALIDATION")
+            print("=" * 80)
+            validate_processed_data(args.output_dir)
+
+        return
+
+    # Full processing mode (original behavior)
     # The --create_efficient_dataset flag provides the fastest experience for both processing and training.
     if args.create_efficient_dataset:
         print("Creating single efficient dataset file for fast loading...")
@@ -480,26 +769,20 @@ def main():
     if args.generate_gearnet_embeddings:
         print("Generating GearNet embeddings...")
 
-        # Import here to handle both script and module execution
+        # Import here to avoid issues if the dependencies are not available
         try:
-            from generate_gearnet_embeddings import generate_gearnet_embeddings_for_dataset
-        except ImportError:
-            try:
-                from .generate_gearnet_embeddings import generate_gearnet_embeddings_for_dataset
-            except ImportError as e:
-                print(f"Could not import generate_gearnet_embeddings: {e}")
-                print("Make sure all dependencies are installed.")
-                return
+            from scripts.generate_gearnet_embeddings import generate_gearnet_embeddings_for_dataset
 
-        try:
             # Generate GearNet embeddings for the processed dataset
-            # Save to data/processed/embeddings by default
-            embeddings_output_dir = os.path.join(args.output_dir, "embeddings")
+            embeddings_output_dir = os.path.join(project_root, "embeddings")
             generate_gearnet_embeddings_for_dataset(
                 processed_dataset_path=args.output_dir,
                 output_dir=embeddings_output_dir
             )
             print(f"GearNet embeddings saved to {embeddings_output_dir}")
+        except ImportError as e:
+            print(f"Could not import generate_gearnet_embeddings: {e}")
+            print("Make sure all dependencies are installed.")
         except Exception as e:
             print(f"Error generating GearNet embeddings: {e}")
 

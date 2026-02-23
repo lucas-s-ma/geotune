@@ -295,6 +295,118 @@ def generate_gearnet_embeddings_for_dataset(processed_dataset_path, output_dir, 
     return successful_count
 
 
+def generate_gearnet_embeddings_for_new_proteins(
+    new_proteins: list,
+    processed_dir: str,
+    hidden_dim: int = 512
+) -> int:
+    """
+    Generate GearNet embeddings only for new proteins (not for the entire dataset)
+
+    This function is designed for incremental processing - it only generates
+    embeddings for proteins that don't already have them.
+
+    Args:
+        new_proteins: List of new protein data dictionaries with 'id', 'n_coords', 'ca_coords', 'c_coords'
+        processed_dir: Directory containing existing embeddings in 'embeddings/' subdirectory
+        hidden_dim: Hidden dimension for the model (must match ESM2 model: 8M=320, 35M=480, 150M=640, 650M=1280)
+
+    Returns:
+        Number of new embeddings successfully generated
+    """
+    import torch
+    import gc
+
+    print(f"Generating GearNet embeddings for {len(new_proteins)} new proteins...")
+    print(f"Hidden dimension: {hidden_dim}")
+
+    # Validate hidden_dim
+    esm_dims = {320: 'ESM2-8M', 480: 'ESM2-35M', 640: 'ESM2-150M', 1280: 'ESM2-650M'}
+    if hidden_dim in esm_dims:
+        print(f"✓ Hidden dimension {hidden_dim} matches {esm_dims[hidden_dim]}")
+    else:
+        print(f"⚠ WARNING: Hidden dimension {hidden_dim} does not match standard ESM2 models!")
+        print(f"  Standard dimensions: {list(esm_dims.keys())}")
+
+    # Setup output directory
+    embeddings_dir = os.path.join(processed_dir, "embeddings")
+    os.makedirs(embeddings_dir, exist_ok=True)
+
+    # Check for existing embeddings to skip
+    existing_embedding_files = {
+        f.replace('_gearnet_embeddings.pkl', '')
+        for f in os.listdir(embeddings_dir)
+        if f.endswith('_gearnet_embeddings.pkl')
+    }
+    print(f"Found {len(existing_embedding_files)} existing embeddings (will be skipped)")
+
+    # Initialize model
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    print(f"Using device: {device}")
+
+    model = PretrainedGNNWrapper(
+        hidden_dim=hidden_dim,
+        use_simple_encoder=False
+    ).to(device)
+    model.eval()
+
+    # Generate embeddings for new proteins
+    successful_count = 0
+    failed_count = 0
+    skipped_count = 0
+
+    for protein in tqdm(new_proteins, desc="Generating embeddings"):
+        protein_id = protein['id']
+
+        # Skip if already exists
+        if protein_id in existing_embedding_files:
+            skipped_count += 1
+            continue
+
+        try:
+            n_coords = torch.tensor(protein['n_coords'], dtype=torch.float32).unsqueeze(0).to(device)
+            ca_coords = torch.tensor(protein['ca_coords'], dtype=torch.float32).unsqueeze(0).to(device)
+            c_coords = torch.tensor(protein['c_coords'], dtype=torch.float32).unsqueeze(0).to(device)
+
+            with torch.no_grad():
+                embeddings = model(n_coords, ca_coords, c_coords)
+
+            embeddings = embeddings.squeeze(0).cpu().numpy()
+
+            # Save embedding
+            output_file = os.path.join(embeddings_dir, f"{protein_id}_gearnet_embeddings.pkl")
+            embedding_data = {
+                'protein_id': protein_id,
+                'embeddings': embeddings.tolist(),
+                'sequence_length': embeddings.shape[0]
+            }
+
+            with open(output_file, 'wb') as f:
+                pickle.dump(embedding_data, f)
+
+            successful_count += 1
+
+        except Exception as e:
+            failed_count += 1
+            if failed_count <= 5:
+                print(f"\n  ✗ Error processing {protein_id}: {e}")
+            elif failed_count == 6:
+                print(f"  Skipping further error messages. Total failures: {failed_count}")
+
+        # Periodic garbage collection
+        if (successful_count + failed_count) % 10 == 0:
+            gc.collect()
+            if device.type == 'cuda':
+                torch.cuda.empty_cache()
+
+    print(f"\nEmbedding generation complete:")
+    print(f"  New: {successful_count}")
+    print(f"  Failed: {failed_count}")
+    print(f"  Skipped: {skipped_count}")
+
+    return successful_count
+
+
 def main():
     parser = argparse.ArgumentParser(description="Generate GearNet embeddings for proteins")
     parser.add_argument("--processed_dataset_path", type=str, required=True,
