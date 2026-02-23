@@ -480,10 +480,18 @@ def main():
     if args.generate_gearnet_embeddings:
         print("Generating GearNet embeddings...")
 
-        # Import here to avoid issues if the dependencies are not available
+        # Import here to handle both script and module execution
         try:
-            from .generate_gearnet_embeddings import generate_gearnet_embeddings_for_dataset
+            from generate_gearnet_embeddings import generate_gearnet_embeddings_for_dataset
+        except ImportError:
+            try:
+                from .generate_gearnet_embeddings import generate_gearnet_embeddings_for_dataset
+            except ImportError as e:
+                print(f"Could not import generate_gearnet_embeddings: {e}")
+                print("Make sure all dependencies are installed.")
+                return
 
+        try:
             # Generate GearNet embeddings for the processed dataset
             # Save to data/processed/embeddings by default
             embeddings_output_dir = os.path.join(args.output_dir, "embeddings")
@@ -492,9 +500,6 @@ def main():
                 output_dir=embeddings_output_dir
             )
             print(f"GearNet embeddings saved to {embeddings_output_dir}")
-        except ImportError as e:
-            print(f"Could not import generate_gearnet_embeddings: {e}")
-            print("Make sure all dependencies are installed.")
         except Exception as e:
             print(f"Error generating GearNet embeddings: {e}")
 

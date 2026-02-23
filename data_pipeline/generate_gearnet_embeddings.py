@@ -248,15 +248,19 @@ def generate_gearnet_embeddings_for_dataset(processed_dataset_path, output_dir, 
 
             except Exception as e:
                 failed_count += 1
-                print(f"\n{'='*80}")
-                print(f"ERROR processing protein {protein_id}:")
-                print(f"Error type: {type(e).__name__}")
-                print(f"Error message: {str(e)}")
-                import traceback
-                print(f"Full traceback:")
-                traceback.print_exc()
-                print(f"{'='*80}\n")
-
+                # Only print full traceback for first 5 errors, then summarize
+                if failed_count <= 5:
+                    print(f"\n{'='*80}")
+                    print(f"ERROR processing protein {protein_id}:")
+                    print(f"Error type: {type(e).__name__}")
+                    print(f"Error message: {str(e)}")
+                    import traceback
+                    print(f"Full traceback:")
+                    traceback.print_exc()
+                    print(f"{'='*80}\n")
+                elif failed_count == 6:
+                    print(f"Skipping further tracebacks. Total failures so far: {failed_count}")
+                
                 # Continue to next protein without stopping
                 continue
 
