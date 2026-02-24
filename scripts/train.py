@@ -47,6 +47,10 @@ def parse_args():
     parser.add_argument("--lora_alpha", type=int, default=16, help="LoRA alpha parameter")
     parser.add_argument("--dist_threshold", type=float, default=15.0, help="Distance threshold for constraints")
     parser.add_argument("--seed", type=int, default=42, help="Random seed")
+    parser.add_argument("--subset_fraction", type=float, default=1.0,
+                        help="Fraction of dataset to use (e.g., 0.01 for 1%%, 0.1 for 10%%). Default: 1.0 (100%%)")
+    parser.add_argument("--debug_subset", action="store_true",
+                        help="Use 1%% of dataset for quick debugging (equivalent to --subset_fraction 0.01)")
 
     return parser.parse_args()
 
@@ -294,6 +298,7 @@ def train_epoch(model, dataloader, optimizer, scheduler, dihedral_constraints, d
 
 def validate(model, dataloader, dihedral_constraints, device, config, structure_alignment_loss=None, frozen_gnn=None, embedding_cache=None):
     """Validate the model with dihedral angle constraints and structure alignment"""
+    # Set ALL models to eval mode BEFORE any operations
     model.eval()
     
     # Ensure frozen_gnn is in eval mode (critical for BatchNorm and Dropout)
@@ -304,6 +309,13 @@ def validate(model, dataloader, dihedral_constraints, device, config, structure_
     if embedding_cache is not None and hasattr(embedding_cache, 'gnn_model'):
         embedding_cache.gnn_model.eval()
     
+    # Ensure dihedral constraints are in eval mode
+    dihedral_constraints.eval()
+    
+    # Ensure structure alignment loss is in eval mode
+    if structure_alignment_loss is not None:
+        structure_alignment_loss.eval()
+    
     total_loss = 0
     constraint_loss_total = 0
     mlm_loss_total = 0
@@ -311,8 +323,13 @@ def validate(model, dataloader, dihedral_constraints, device, config, structure_
     struct_align_latent_loss = 0
     struct_align_physical_loss = 0
     num_batches = 0
+    
+    # Track embedding source for debugging
+    precomputed_count = 0
+    onthefly_count = 0
 
-    with torch.no_grad():
+    # Explicitly disable gradient computation for validation
+    with torch.inference_mode():
         progress_bar = tqdm(dataloader, desc="Validating")
         for batch_idx, batch in enumerate(progress_bar):
             input_ids = batch['input_ids'].to(device)
@@ -323,6 +340,12 @@ def validate(model, dataloader, dihedral_constraints, device, config, structure_
 
             has_structural_tokens = 'structural_tokens' in batch
             has_precomputed_embeddings = 'precomputed_embeddings' in batch
+            
+            # Track embedding source
+            if has_precomputed_embeddings:
+                precomputed_count += 1
+            else:
+                onthefly_count += 1
 
             # === Forward pass for Geometric and Structural Losses (using unmasked inputs) ===
             outputs = model(
@@ -348,7 +371,7 @@ def validate(model, dataloader, dihedral_constraints, device, config, structure_
 
             if structure_alignment_loss is not None and has_structural_tokens:
                 structure_tokens = batch['structural_tokens'].to(device)
-                
+
                 if has_precomputed_embeddings:
                     pGNN_embeddings = batch['precomputed_embeddings'].to(device)
                 else:
@@ -433,6 +456,9 @@ def validate(model, dataloader, dihedral_constraints, device, config, structure_
             'val_foldseek_loss': avg_physical_loss,
             'val_gnn_loss': avg_latent_loss,
         })
+    
+    # Print embedding source statistics
+    print(f"\nValidation embedding stats: Pre-computed={precomputed_count}, On-the-fly={onthefly_count}")
 
     return avg_loss, avg_mlm_loss, avg_constraint_loss, avg_struct_align_loss, avg_latent_loss, avg_physical_loss
 
@@ -652,7 +678,31 @@ def main():
         generator=torch.Generator().manual_seed(config.training.seed)
     )
 
-    print(f"Dataset split: {train_size} training samples, {val_size} validation samples")
+    # Apply subset fraction if specified (for quick debugging/testing)
+    subset_fraction = getattr(args, 'subset_fraction', 1.0)
+    if args.debug_subset:
+        subset_fraction = 0.01  # Override for debug mode
+    
+    if subset_fraction < 1.0:
+        train_subset_size = max(1, int(len(train_dataset) * subset_fraction))
+        val_subset_size = max(1, int(len(val_dataset) * subset_fraction))
+        
+        train_dataset = torch.utils.data.Subset(
+            train_dataset,
+            list(range(train_subset_size))
+        )
+        val_dataset = torch.utils.data.Subset(
+            val_dataset,
+            list(range(val_subset_size))
+        )
+        
+        print(f"\n{'='*80}")
+        print(f"DEBUG MODE: Using {subset_fraction*100:.1f}% of dataset")
+        print(f"  Training samples: {len(train_dataset)} (of {train_size})")
+        print(f"  Validation samples: {len(val_dataset)} (of {val_size})")
+        print(f"{'='*80}\n")
+
+    print(f"Final dataset split: {len(train_dataset)} training samples, {len(val_dataset)} validation samples")
 
     train_loader = DataLoader(
         train_dataset,
