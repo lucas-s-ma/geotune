@@ -118,6 +118,9 @@ class EmbeddingCache:
         ca_coords = ca_coords.to(self.device)
         c_coords = c_coords.to(self.device)
 
+        # Set GNN model to eval mode (critical for validation!)
+        self.gnn_model.eval()
+
         # Generate embedding
         with torch.no_grad():
             embedding = self.gnn_model(n_coords, ca_coords, c_coords)

@@ -295,6 +295,15 @@ def train_epoch(model, dataloader, optimizer, scheduler, dihedral_constraints, d
 def validate(model, dataloader, dihedral_constraints, device, config, structure_alignment_loss=None, frozen_gnn=None, embedding_cache=None):
     """Validate the model with dihedral angle constraints and structure alignment"""
     model.eval()
+    
+    # Ensure frozen_gnn is in eval mode (critical for BatchNorm and Dropout)
+    if frozen_gnn is not None:
+        frozen_gnn.eval()
+    
+    # Ensure embedding cache's GNN model is in eval mode
+    if embedding_cache is not None and hasattr(embedding_cache, 'gnn_model'):
+        embedding_cache.gnn_model.eval()
+    
     total_loss = 0
     constraint_loss_total = 0
     mlm_loss_total = 0
@@ -526,7 +535,19 @@ def main():
 
     # Initialize structure alignment loss module and GNN (if enabled)
     use_structure_alignment = getattr(config.constraints, 'use_structure_alignment', True)
-    use_precomputed = getattr(config.data, 'use_precomputed_embeddings', False)
+    
+    # Auto-detect: Check if pre-computed embeddings exist
+    embeddings_path = os.path.join(config.data.data_path, "embeddings")
+    has_precomputed_embeddings = (
+        os.path.exists(embeddings_path) and 
+        any(f.endswith('_gearnet_embeddings.pkl') for f in os.listdir(embeddings_path))
+    )
+    
+    # Config setting can override, but we default to using pre-computed if available
+    use_precomputed_from_config = getattr(config.data, 'use_precomputed_embeddings', True)
+    
+    # Use pre-computed embeddings if they exist AND config allows it
+    use_precomputed = has_precomputed_embeddings and use_precomputed_from_config
 
     frozen_gnn = None
     structure_alignment_loss = None
@@ -537,18 +558,11 @@ def main():
 
         # Determine whether to load pre-computed embeddings or generate them
         if use_precomputed:
-            print("Attempting to use pre-computed embeddings as per config.")
-            embeddings_path = os.path.join(config.data.data_path, "embeddings")
-            if not os.path.exists(embeddings_path) or not any(f.endswith('_gearnet_embeddings.pkl') for f in os.listdir(embeddings_path)):
-                raise FileNotFoundError(
-                    f"Configuration requires pre-computed embeddings, but none were found in {embeddings_path}. "
-                    "Please generate embeddings first or set 'use_precomputed_embeddings' to false in your config."
-                )
-            
-            print("Pre-computed embeddings found. On-the-fly generation will be disabled.")
+            print(f"✓ Using PRE-COMPUTED embeddings from {embeddings_path}")
+            print("  (On-the-fly generation will be disabled - faster training!)")
             load_embeddings = True
             
-            # We still need to get the dimension from a sample embedding
+            # Get embedding dimension from a sample embedding
             embedding_files = [f for f in os.listdir(embeddings_path) if f.endswith('_gearnet_embeddings.pkl')]
             sample_embedding_file = os.path.join(embeddings_path, embedding_files[0])
             with open(sample_embedding_file, 'rb') as f:
@@ -557,10 +571,13 @@ def main():
                 if isinstance(sample_embeddings, list):
                     sample_embeddings = np.array(sample_embeddings)
                 pgnn_hidden_dim = sample_embeddings.shape[-1]
-                print(f"Inferred GNN embedding dimension from sample: {pgnn_hidden_dim}")
+                print(f"✓ Inferred GNN embedding dimension from sample: {pgnn_hidden_dim}")
 
         else:
-            print("Generating embeddings on-the-fly.")
+            if not has_precomputed_embeddings:
+                print(f"⚠ No pre-computed embeddings found in {embeddings_path}")
+            print("→ Generating embeddings ON-THE-FLY during training")
+            print("  (Consider pre-generating embeddings with generate_gearnet_embeddings.py for faster training)")
             load_embeddings = False
             
             # Initialize frozen pre-trained GNN for on-the-fly generation

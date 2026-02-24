@@ -265,6 +265,9 @@ class StructureAlignmentLoss(nn.Module):
     def _calculate_physical_loss_with_per_sample(self, pLM_embeddings, structure_tokens, attention_mask=None):
         """
         Calculate the physical-level loss for structural token prediction with per-sample outputs
+        
+        Note: Foldseek 3Di tokens are in range [0, 20] (21 structural states).
+        Tokens with value >= num_structural_classes (21) or < 0 are ignored.
         """
         batch_size, seq_len, hidden_dim = pLM_embeddings.shape
         logits = self.structural_prediction_head(pLM_embeddings)
@@ -284,13 +287,18 @@ class StructureAlignmentLoss(nn.Module):
             valid_logits = logits_single[valid_positions]
             valid_tokens = tokens_single[valid_positions]
 
+            # Filter out tokens that are out of range [0, num_structural_classes-1]
+            # Foldseek 3Di tokens should be in range [0, 20] for 21 structural states
             invalid_mask = (valid_tokens >= self.num_structural_classes) | (valid_tokens < 0)
             if invalid_mask.any():
                 valid_indices = ~invalid_mask
                 valid_logits = valid_logits[valid_indices]
                 valid_tokens = valid_tokens[valid_indices]
 
+            # Additional safety check: clamp tokens to valid range
+            # This handles edge cases where tokens might be slightly out of range due to data issues
             if valid_logits.size(0) > 0:
+                valid_tokens = valid_tokens.clamp(0, self.num_structural_classes - 1)
                 physical_loss_per_sample[i] = self.physical_loss_fn(valid_logits, valid_tokens)
 
         physical_loss = physical_loss_per_sample.mean()
