@@ -421,12 +421,15 @@ def main():
                         help="Number of proteins to process in each memory chunk (default: 50)")
     parser.add_argument("--max_proteins", type=int, default=None,
                         help="Maximum number of proteins to process (for testing). If not specified, process all.")
+    parser.add_argument("--skip_existing", action="store_true", default=True,
+                        help="Skip proteins that already have embeddings (default: True)")
 
     args = parser.parse_args()
 
     print(f"Generating GearNet embeddings from {args.processed_dataset_path}")
     print(f"Output directory: {args.output_dir}")
     print(f"Memory management: Processing in chunks of {args.chunk_size} proteins")
+    print(f"Skip existing embeddings: {args.skip_existing}")
     if args.max_proteins:
         print(f"Testing mode: Processing only first {args.max_proteins} proteins")
 
@@ -440,11 +443,13 @@ def main():
         args.max_proteins
     )
 
-    print(f"Completed! Successfully generated embeddings for {successful_count} proteins")
+    print(f"\n{'='*80}")
+    print("COMPLETED!")
+    print(f"{'='*80}")
+    print(f"New embeddings generated: {successful_count}")
     print(f"Individual embeddings saved to: {args.output_dir}")
-
-    # Inform user about the summary
-    print(f"A summary file has been created at: {os.path.join(args.output_dir, 'generation_summary.txt')}")
+    print(f"Summary file: {os.path.join(args.output_dir, 'generation_summary.txt')}")
+    print(f"{'='*80}")
 
 
 if __name__ == "__main__":
