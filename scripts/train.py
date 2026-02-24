@@ -298,6 +298,8 @@ def train_epoch(model, dataloader, optimizer, scheduler, dihedral_constraints, d
 
 def validate(model, dataloader, dihedral_constraints, device, config, structure_alignment_loss=None, frozen_gnn=None, embedding_cache=None):
     """Validate the model with dihedral angle constraints and structure alignment"""
+    import time
+    
     # Set ALL models to eval mode BEFORE any operations
     model.eval()
     
@@ -327,11 +329,21 @@ def validate(model, dataloader, dihedral_constraints, device, config, structure_
     # Track embedding source for debugging
     precomputed_count = 0
     onthefly_count = 0
+    
+    # Timing - measure TOTAL time including DataLoader overhead
+    val_start_time = time.time()
+    forward_time = 0
+    loss_time = 0
+    dataloader_time = 0
 
     # Explicitly disable gradient computation for validation
     with torch.inference_mode():
         progress_bar = tqdm(dataloader, desc="Validating")
+        batch_start = time.time()  # Start timing BEFORE first batch
         for batch_idx, batch in enumerate(progress_bar):
+            # Measure DataLoader time (time spent getting the batch)
+            dataloader_time += time.time() - batch_start
+            
             input_ids = batch['input_ids'].to(device)
             attention_mask = batch['attention_mask'].to(device)
             n_coords = batch['n_coords'].to(device)
@@ -347,14 +359,31 @@ def validate(model, dataloader, dihedral_constraints, device, config, structure_
             else:
                 onthefly_count += 1
 
-            # === Forward pass for Geometric and Structural Losses (using unmasked inputs) ===
+            # === SINGLE FORWARD PASS for all losses ===
+            # Create masked input for MLM (do this before forward pass)
+            mask_ratio = 0.15
+            mask_positions = (torch.rand(input_ids.shape, device=device) < mask_ratio) & attention_mask.bool()
+            labels = input_ids.clone()
+            labels[~mask_positions] = -100
+
+            masked_input_ids = input_ids.clone()
+            masked_input_ids[mask_positions] = 32  # ESM2 mask token ID
+
+            # Single forward pass with masked input
+            forward_start = time.time()
             outputs = model(
-                input_ids=input_ids,
+                input_ids=masked_input_ids,
                 attention_mask=attention_mask
             )
             pLM_embeddings = outputs['sequence_output']
+            forward_time += time.time() - forward_start
+            
+            # Calculate MLM loss from the same forward pass
+            seq_logits = model.lm_head(pLM_embeddings)
+            mlm_loss = nn.CrossEntropyLoss(ignore_index=-100)(seq_logits.view(-1, seq_logits.size(-1)), labels.view(-1))
 
             # Calculate dihedral constraint loss
+            loss_start = time.time()
             dihedral_losses = dihedral_constraints(
                 pLM_embeddings,
                 n_coords,
@@ -396,22 +425,7 @@ def validate(model, dataloader, dihedral_constraints, device, config, structure_
                 struct_align_loss = struct_align_results['total_loss']
                 latent_loss = struct_align_results.get('latent_loss', torch.tensor(0.0, device=device))
                 physical_loss = struct_align_results.get('physical_loss', torch.tensor(0.0, device=device))
-
-            # === Forward pass for MLM Loss (using masked inputs) ===
-            mask_ratio = 0.15
-            mask_positions = (torch.rand(input_ids.shape, device=device) < mask_ratio) & attention_mask.bool()
-            labels = input_ids.clone()
-            labels[~mask_positions] = -100
-
-            masked_input_ids = input_ids.clone()
-            masked_input_ids[mask_positions] = 32  # ESM2 mask token ID
-
-            masked_outputs = model(
-                input_ids=masked_input_ids,
-                attention_mask=attention_mask
-            )
-            seq_logits = model.lm_head(masked_outputs['sequence_output'])
-            mlm_loss = nn.CrossEntropyLoss(ignore_index=-100)(seq_logits.view(-1, seq_logits.size(-1)), labels.view(-1))
+            loss_time += time.time() - loss_start
 
             # Combine all losses
             combined_loss = mlm_loss + \
@@ -430,13 +444,19 @@ def validate(model, dataloader, dihedral_constraints, device, config, structure_
             struct_align_latent_loss += latent_loss.item()
             struct_align_physical_loss += physical_loss.item()
             num_batches += 1
+            
+            # Update progress bar with timing
+            iter_per_sec = (batch_idx + 1) / (time.time() - val_start_time)
+            progress_bar.set_postfix({
+                'Loss': f'{combined_loss.item():.4f}',
+                'iter/s': f'{iter_per_sec:.1f}',
+                'DL': f'{dataloader_time/(time.time()-val_start_time)*100:.0f}%'
+            })
+            
+            # Reset batch_start for next iteration
+            batch_start = time.time()
 
-            # Log batch-level validation losses for debugging
-            if config.logging.use_wandb:
-                wandb.log({
-                    'val_batch_foldseek_loss': physical_loss.item(),
-                    'val_batch_gnn_loss': latent_loss.item(),
-                })
+    total_time = time.time() - val_start_time
 
     # Calculate epoch averages
     avg_loss = total_loss / num_batches if num_batches > 0 else 0
@@ -457,8 +477,16 @@ def validate(model, dataloader, dihedral_constraints, device, config, structure_
             'val_gnn_loss': avg_latent_loss,
         })
     
-    # Print embedding source statistics
-    print(f"\nValidation embedding stats: Pre-computed={precomputed_count}, On-the-fly={onthefly_count}")
+    # Print detailed timing statistics
+    print(f"\n{'='*80}")
+    print(f"VALIDATION TIMING:")
+    print(f"  Total time: {total_time:.2f}s for {num_batches} batches")
+    print(f"  Avg iter/s: {num_batches/total_time:.1f}")
+    print(f"  DataLoader: {dataloader_time:.2f}s ({dataloader_time/total_time*100:.1f}%)")
+    print(f"  Forward pass: {forward_time:.2f}s ({forward_time/total_time*100:.1f}%)")
+    print(f"  Loss calc: {loss_time:.2f}s ({loss_time/total_time*100:.1f}%)")
+    print(f"  Embeddings: Pre-computed={precomputed_count}, On-the-fly={onthefly_count}")
+    print(f"{'='*80}")
 
     return avg_loss, avg_mlm_loss, avg_constraint_loss, avg_struct_align_loss, avg_latent_loss, avg_physical_loss
 
@@ -704,12 +732,18 @@ def main():
 
     print(f"Final dataset split: {len(train_dataset)} training samples, {len(val_dataset)} validation samples")
 
+    # Use maximum workers for faster data loading (I/O bottleneck)
+    num_workers = min(8, getattr(config.data, 'num_workers', 4))
+    
     train_loader = DataLoader(
         train_dataset,
         batch_size=config.training.batch_size,
         shuffle=True,
         collate_fn=collate_fn,
-        num_workers=2
+        num_workers=num_workers,
+        pin_memory=True if torch.cuda.is_available() else False,
+        prefetch_factor=4 if num_workers > 0 else None,
+        persistent_workers=True if num_workers > 0 else False
     )
 
     val_loader = DataLoader(
@@ -717,7 +751,10 @@ def main():
         batch_size=config.training.batch_size,
         shuffle=False,
         collate_fn=collate_fn,
-        num_workers=1
+        num_workers=num_workers,
+        pin_memory=True if torch.cuda.is_available() else False,
+        prefetch_factor=4 if num_workers > 0 else None,
+        persistent_workers=True if num_workers > 0 else False
     )
 
     # Setup optimizer with separate learning rates for primal and dual tasks
