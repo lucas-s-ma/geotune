@@ -10,6 +10,7 @@ from Bio.PDB.DSSP import DSSP
 import warnings
 import pickle
 import json
+from tqdm import tqdm
 warnings.filterwarnings("ignore", category=UserWarning)
 
 
@@ -356,41 +357,61 @@ class EfficientProteinDataset(Dataset):
     _protein_data = None  # Class-level cache for protein data
     _structural_tokens = None  # Class-level cache for structural tokens
 
-    def __init__(self, processed_data_path, max_seq_len=1024, include_structural_tokens=False, load_embeddings=False):
+    def __init__(self, processed_data_path, max_seq_len=1024, include_structural_tokens=False, load_embeddings=False, subset_fraction=1.0):
         """
         Args:
             processed_data_path: Path to directory containing pre-processed dataset.pkl
             max_seq_len: Maximum sequence length
             include_structural_tokens: Whether to include precomputed structural tokens (Foldseek)
             load_embeddings: Whether to load pre-computed embeddings from data/processed/embeddings
+            subset_fraction: Fraction of dataset to load (e.g., 0.01 for 1%). Default: 1.0 (100%)
         """
         self.max_seq_len = max_seq_len
         self.include_structural_tokens = include_structural_tokens
         self.load_embeddings = load_embeddings
+        self.subset_fraction = subset_fraction
 
         # Load data only once and cache it at the class level
+        # Note: Cache is shared, so subset_fraction=1.0 should be used first for full dataset
         if EfficientProteinDataset._protein_data is None:
             dataset_file = os.path.join(processed_data_path, "processed_dataset.pkl")
             if os.path.exists(dataset_file):
                 with open(dataset_file, 'rb') as f:
-                    EfficientProteinDataset._protein_data = pickle.load(f)
-                print(f"Loaded and cached {len(EfficientProteinDataset._protein_data)} proteins.")
+                    all_data = pickle.load(f)
+                print(f"Loaded and cached {len(all_data)} proteins.")
+                EfficientProteinDataset._protein_data = all_data  # Cache full dataset
             else:
                 raise FileNotFoundError(f"Processed dataset not found at {dataset_file}.")
+        
+        # Apply subset fraction to the cached full dataset
+        all_data = EfficientProteinDataset._protein_data
+        if subset_fraction < 1.0:
+            subset_size = max(1, int(len(all_data) * subset_fraction))
+            self.proteins = all_data[:subset_size]
+            print(f"Using subset: {len(self.proteins)} proteins ({subset_fraction*100:.1f}%)")
+        else:
+            self.proteins = all_data
 
-        self.proteins = EfficientProteinDataset._protein_data
-
-        if self.include_structural_tokens and EfficientProteinDataset._structural_tokens is None:
+        # Load structural tokens (only for subset if applicable)
+        if self.include_structural_tokens:
             struct_token_file = os.path.join(processed_data_path, "structural_tokens.pkl")
             if os.path.exists(struct_token_file):
-                with open(struct_token_file, 'rb') as f:
-                    EfficientProteinDataset._structural_tokens = pickle.load(f)
-                print(f"Loaded and cached structural tokens for {len(EfficientProteinDataset._structural_tokens)} proteins.")
+                if EfficientProteinDataset._structural_tokens is None:
+                    with open(struct_token_file, 'rb') as f:
+                        EfficientProteinDataset._structural_tokens = pickle.load(f)
+                    print(f"Loaded and cached structural tokens for {len(EfficientProteinDataset._structural_tokens)} proteins.")
+                # Apply subset to structural tokens
+                if subset_fraction < 1.0:
+                    self.structural_tokens = EfficientProteinDataset._structural_tokens[:subset_size]
+                    print(f"Using subset: {len(self.structural_tokens)} structural tokens ({subset_fraction*100:.1f}%)")
+                else:
+                    self.structural_tokens = EfficientProteinDataset._structural_tokens
             else:
                 print("Warning: Structural tokens file not found. Continuing without them.")
                 self.include_structural_tokens = False
-
-        self.structural_tokens = EfficientProteinDataset._structural_tokens
+                self.structural_tokens = None
+        else:
+            self.structural_tokens = None
 
         # Load embeddings into memory cache for fast access
         self.embedding_cache = {}  # In-memory cache for embeddings

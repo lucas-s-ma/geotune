@@ -683,11 +683,18 @@ def main():
     include_structural_tokens = os.path.exists(struct_token_path)
     print(f"Structural tokens available: {include_structural_tokens}")
 
+    # Get subset fraction before creating dataset (for efficient loading)
+    subset_fraction = getattr(args, 'subset_fraction', 1.0)
+    if args.debug_subset:
+        subset_fraction = 0.01  # Override for debug mode
+
+    # Load dataset with subset fraction applied immediately (avoids loading full dataset)
     full_dataset = EfficientProteinDataset(
         config.data.data_path,
         max_seq_len=config.training.max_seq_len,
         include_structural_tokens=include_structural_tokens,
-        load_embeddings=load_embeddings
+        load_embeddings=load_embeddings,
+        subset_fraction=subset_fraction
     )
 
     # Create train-validation split (80% train, 20% validation)
@@ -706,28 +713,11 @@ def main():
         generator=torch.Generator().manual_seed(config.training.seed)
     )
 
-    # Apply subset fraction if specified (for quick debugging/testing)
-    subset_fraction = getattr(args, 'subset_fraction', 1.0)
-    if args.debug_subset:
-        subset_fraction = 0.01  # Override for debug mode
-    
     if subset_fraction < 1.0:
-        train_subset_size = max(1, int(len(train_dataset) * subset_fraction))
-        val_subset_size = max(1, int(len(val_dataset) * subset_fraction))
-        
-        train_dataset = torch.utils.data.Subset(
-            train_dataset,
-            list(range(train_subset_size))
-        )
-        val_dataset = torch.utils.data.Subset(
-            val_dataset,
-            list(range(val_subset_size))
-        )
-        
         print(f"\n{'='*80}")
         print(f"DEBUG MODE: Using {subset_fraction*100:.1f}% of dataset")
-        print(f"  Training samples: {len(train_dataset)} (of {train_size})")
-        print(f"  Validation samples: {len(val_dataset)} (of {val_size})")
+        print(f"  Training samples: {len(train_dataset)}")
+        print(f"  Validation samples: {len(val_dataset)}")
         print(f"{'='*80}\n")
 
     print(f"Final dataset split: {len(train_dataset)} training samples, {len(val_dataset)} validation samples")
