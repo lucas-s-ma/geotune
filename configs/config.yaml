@@ -31,7 +31,7 @@ training:
   warmup_steps: 100       # Warmup steps for scheduler
   max_seq_len: 512        # Maximum sequence length - reduced for memory
   seed: 1644                # Random seed
-  output_dir: "outputs"   # Output directory
+  output_dir: "outputs_unconstrained"   # Output directory for unconstrained training
   checkpoint_frequency: 1 # Save checkpoint every N epochs (default: 2, set to 1 for testing)
   use_gradient_checkpointing: true  # Enable gradient checkpointing to save memory
   mixed_precision: false   # Use fp16 mixed precision training

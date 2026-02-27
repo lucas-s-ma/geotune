@@ -377,6 +377,13 @@ def main():
     if args.learning_rate: config.training.learning_rate = args.learning_rate
     if args.batch_size: config.training.batch_size = args.batch_size
 
+    # Use separate output directory for constrained training (unless explicitly overridden)
+    if args.output_dir is None:
+        config.training.output_dir = "outputs_constrained"
+        print(f"\n{'='*80}")
+        print(f"CONSTRAINED TRAINING: Using output directory: {config.training.output_dir}")
+        print(f"{'='*80}\n")
+
     # Add new constrained-learning arguments to the config for logging
     config.training.dual_learning_rate = args.dual_learning_rate
     config.training.dihedral_epsilon = args.dihedral_epsilon
