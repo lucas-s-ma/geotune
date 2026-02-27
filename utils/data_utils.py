@@ -413,29 +413,13 @@ class EfficientProteinDataset(Dataset):
         else:
             self.structural_tokens = None
 
-        # Load embeddings into memory cache for fast access
-        self.embedding_cache = {}  # In-memory cache for embeddings
+        # Store path to embeddings, but do not load them yet
+        self.embeddings_dir = None
         if self.load_embeddings:
             embeddings_dir = os.path.join(processed_data_path, "embeddings")
             if os.path.exists(embeddings_dir):
-                print(f"Loading embeddings into memory cache from {embeddings_dir}...")
-                embedding_files = [f for f in os.listdir(embeddings_dir) if f.endswith('_gearnet_embeddings.pkl')]
-                
-                # Load all embeddings into memory
-                for filename in tqdm(embedding_files, desc="Loading embeddings", unit="files"):
-                    protein_id = filename.replace('_gearnet_embeddings.pkl', '')
-                    embedding_path = os.path.join(embeddings_dir, filename)
-                    try:
-                        with open(embedding_path, 'rb') as f:
-                            embedding_data = pickle.load(f)
-                            embeddings = embedding_data['embeddings']
-                            if isinstance(embeddings, list):
-                                embeddings = np.array(embeddings, dtype=np.float32)
-                            self.embedding_cache[protein_id] = embeddings
-                    except Exception as e:
-                        print(f"Warning: Failed to load embedding for {protein_id}: {e}")
-                
-                print(f"✓ Loaded {len(self.embedding_cache)} embeddings into memory cache")
+                self.embeddings_dir = embeddings_dir
+                print(f"Embeddings will be loaded on-the-fly from {self.embeddings_dir}")
             else:
                 print("Warning: Embeddings directory not found. Continuing without pre-computed embeddings.")
                 self.load_embeddings = False
@@ -491,22 +475,33 @@ class EfficientProteinDataset(Dataset):
             'index': idx
         }
 
-        # Add pre-computed embeddings if available (from in-memory cache)
-        if self.load_embeddings and protein['id'] in self.embedding_cache:
-            embeddings = self.embedding_cache[protein['id']]
-            
-            # Truncate if necessary
-            if len(embeddings) > self.max_seq_len:
-                embeddings = embeddings[:self.max_seq_len]
-            # Pad or truncate to max length
-            if len(embeddings) < self.max_seq_len:
-                padding_length = self.max_seq_len - len(embeddings)
-                padding_embeddings = np.zeros((padding_length, embeddings.shape[-1]))
-                embeddings = np.vstack([embeddings, padding_embeddings])
-            result['precomputed_embeddings'] = torch.tensor(embeddings, dtype=torch.float32)
-        elif self.load_embeddings:
-            # Debug: print if protein ID is not found in embedding cache
-            print(f"Debug: Protein ID '{protein['id']}' not found in embedding cache. Available: {len(self.embedding_cache)} embeddings")
+        # Add pre-computed embeddings if enabled (load on-the-fly)
+        if self.load_embeddings and self.embeddings_dir:
+            embedding_path = os.path.join(self.embeddings_dir, f"{protein['id']}_gearnet_embeddings.pkl")
+            if os.path.exists(embedding_path):
+                try:
+                    with open(embedding_path, 'rb') as f:
+                        embedding_data = pickle.load(f)
+                        embeddings = embedding_data['embeddings']
+                        if isinstance(embeddings, list):
+                            embeddings = np.array(embeddings, dtype=np.float32)
+                    
+                    # Truncate if necessary
+                    if len(embeddings) > self.max_seq_len:
+                        embeddings = embeddings[:self.max_seq_len]
+                    
+                    # Pad to max length
+                    if len(embeddings) < self.max_seq_len:
+                        padding_length = self.max_seq_len - len(embeddings)
+                        padding_embeddings = np.zeros((padding_length, embeddings.shape[-1]))
+                        embeddings = np.vstack([embeddings, padding_embeddings])
+                    
+                    result['precomputed_embeddings'] = torch.tensor(embeddings, dtype=torch.float32)
+                except Exception as e:
+                    print(f"Warning: Failed to load embedding for {protein['id']}: {e}")
+            else:
+                # This case should ideally not happen if embeddings are generated for all proteins
+                print(f"Warning: Embedding file not found for {protein['id']} at {embedding_path}")
 
         # Add structural tokens if available
         if self.include_structural_tokens:

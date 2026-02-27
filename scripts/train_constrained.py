@@ -138,8 +138,18 @@ def train_epoch(model, dataloader, optimizer, scheduler, lagrangian_module, dihe
         else:
             scaled_lagrangian.backward()
 
+        # 5. Dual Update (Lagrange Multipliers) - UPDATE LAMBDA EVERY BATCH
+        # Update based on constraint violations from current batch
+        # This happens every batch to properly track constraint violations
+        lagrangian_module.update_dual_variables(
+            per_sample_dihedral_losses,
+            per_sample_gnn_losses,
+            per_sample_foldseek_losses,
+            indices
+        )
+
+        # 6. Primal Update (Model Parameters) - UPDATE THETA every gradient_accumulation_steps
         if (batch_idx + 1) % gradient_accumulation_steps == 0:
-            # 5. Primal Update (Model Parameters) - UPDATE THETA FIRST
             if scaler is not None:
                 scaler.unscale_(optimizer)
             # Clip gradients for all trainable parameters in optimizer
@@ -152,15 +162,6 @@ def train_epoch(model, dataloader, optimizer, scheduler, lagrangian_module, dihe
                 optimizer.step()
             scheduler.step()
             optimizer.zero_grad()
-
-            # 6. Dual Update (Lagrange Multipliers) - UPDATE LAMBDA SECOND
-            # Update based on constraint violations from current batch
-            lagrangian_module.update_dual_variables(
-                per_sample_dihedral_losses,
-                per_sample_gnn_losses,
-                per_sample_foldseek_losses,
-                indices
-            )
 
         # Logging
         total_lagrangian_loss += lagrangian.item()
@@ -203,23 +204,58 @@ def train_epoch(model, dataloader, optimizer, scheduler, lagrangian_module, dihe
 
 def validate(model, dataloader, dihedral_module, alignment_module, gnn_module, device, config):
     """Validates the model by computing and logging unconstrained losses."""
+    import time
+    
+    # Set ALL modules to eval mode (critical for BatchNorm and Dropout)
     model.eval()
+    dihedral_module.eval()
+    if alignment_module is not None:
+        alignment_module.eval()
+    if gnn_module is not None:
+        gnn_module.eval()
+    
     total_mlm_loss, total_dihedral_loss, total_gnn_loss, total_foldseek_loss = 0, 0, 0, 0
     num_batches = 0
+    
+    # Track timing for performance analysis
+    val_start_time = time.time()
+    forward_time = 0
+    loss_time = 0
+    dataloader_time = 0
+    
+    # Track embedding source
+    precomputed_count = 0
+    onthefly_count = 0
 
-    with torch.no_grad():
-        for batch in tqdm(dataloader, desc="Validating"):
+    # Use inference_mode() for better performance than no_grad()
+    with torch.inference_mode():
+        progress_bar = tqdm(dataloader, desc="Validating")
+        batch_start = time.time()
+        
+        for batch_idx, batch in enumerate(progress_bar):
+            # Measure DataLoader time
+            dataloader_time += time.time() - batch_start
+            
             input_ids = batch['input_ids'].to(device)
             attention_mask = batch['attention_mask'].to(device)
             n_coords = batch['n_coords'].to(device)
             ca_coords = batch['ca_coords'].to(device)
             c_coords = batch['c_coords'].to(device)
 
+            has_precomputed_embeddings = 'precomputed_embeddings' in batch
+            if has_precomputed_embeddings:
+                precomputed_count += 1
+            else:
+                onthefly_count += 1
+
             # === Forward pass for Geometric and Structural Losses (using unmasked inputs) ===
+            forward_start = time.time()
             outputs = model(input_ids=input_ids, attention_mask=attention_mask)
             pLM_embeddings = outputs['sequence_output']
+            forward_time += time.time() - forward_start
 
             # Dihedral Loss
+            loss_start = time.time()
             cos_true_phi, cos_true_psi = compute_dihedral_angles_from_coordinates(n_coords, ca_coords, c_coords)
             cos_pred_phi, cos_pred_psi = dihedral_module.predict_dihedral_angles(pLM_embeddings)
             min_len_phi = min(cos_true_phi.shape[1], cos_pred_phi.shape[1])
@@ -235,18 +271,20 @@ def validate(model, dataloader, dihedral_module, alignment_module, gnn_module, d
             # Structure Alignment Losses
             if alignment_module is not None and 'structural_tokens' in batch:
                 structure_tokens = batch['structural_tokens'].to(device)
-                if 'precomputed_embeddings' in batch:
+                if has_precomputed_embeddings:
                     pGNN_embeddings = batch['precomputed_embeddings'].to(device)
                 else:
                     pGNN_embeddings = gnn_module(n_coords, ca_coords, c_coords)
-                
+
                 struct_align_results = alignment_module(pLM_embeddings, pGNN_embeddings, structure_tokens, attention_mask)
-                
+
                 # Ensure we handle cases where loss is not computed (e.g., all NaNs were skipped)
                 if torch.is_tensor(struct_align_results['latent_loss']):
                     total_gnn_loss += struct_align_results['latent_loss'].item()
                 if torch.is_tensor(struct_align_results['physical_loss']):
                     total_foldseek_loss += struct_align_results['physical_loss'].item()
+            
+            loss_time += time.time() - loss_start
 
             # === Forward pass for MLM Loss (using masked inputs) ===
             mask_ratio = 0.15
@@ -260,6 +298,32 @@ def validate(model, dataloader, dihedral_module, alignment_module, gnn_module, d
             total_mlm_loss += nn.CrossEntropyLoss(ignore_index=-100)(seq_logits.view(-1, seq_logits.size(-1)), labels.view(-1)).item()
 
             num_batches += 1
+            
+            # Update progress bar with timing
+            total_time = time.time() - val_start_time
+            iter_per_sec = (batch_idx + 1) / total_time if total_time > 0 else 0
+            dl_percentage = (dataloader_time / total_time * 100) if total_time > 0 else 0
+            progress_bar.set_postfix({
+                'Loss': f'{(total_mlm_loss + total_dihedral_loss + total_gnn_loss + total_foldseek_loss) / num_batches:.4f}',
+                'iter/s': f'{iter_per_sec:.1f}',
+                'DL': f'{dl_percentage:.0f}%'
+            })
+
+            # Reset batch_start for next iteration
+            batch_start = time.time()
+
+    total_time = time.time() - val_start_time
+
+    # Print detailed timing statistics
+    print(f"\n{'='*80}")
+    print(f"VALIDATION TIMING:")
+    print(f"  Total time: {total_time:.2f}s for {num_batches} batches")
+    print(f"  Avg iter/s: {num_batches/total_time:.1f}")
+    print(f"  DataLoader: {dataloader_time:.2f}s ({dataloader_time/total_time*100:.1f}%)")
+    print(f"  Forward pass: {forward_time:.2f}s ({forward_time/total_time*100:.1f}%)")
+    print(f"  Loss calc: {loss_time:.2f}s ({loss_time/total_time*100:.1f}%)")
+    print(f"  Embeddings: Pre-computed={precomputed_count}, On-the-fly={onthefly_count}")
+    print(f"{'='*80}")
 
     return (
         total_mlm_loss / num_batches if num_batches > 0 else 0,
