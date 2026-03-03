@@ -117,11 +117,13 @@ def get_masked_sequence_scores(model, sequences, tokenizer, device, batch_size=8
 
 def compute_mutational_effect(model, wild_type_seq, mutant_seq, tokenizer, device):
     """
-    Compute the mutational effect score using masked marginal likelihood.
+    Compute the mutational effect score using Masked Marginal Likelihood (MML).
     
-    The score is the difference in log likelihood between the mutant and wild type.
-    More precisely, we compute the log probability of the mutant amino acid at the 
-    mutated position minus the log probability of the wild type amino acid.
+    For each mutation:
+    1. Mask the mutated position in the wild-type sequence
+    2. Compute log P(mutant | masked context) - log P(wild-type | masked context)
+    
+    This is the standard approach used in ESM-1v, ESM2, and related papers.
     
     Args:
         model: The trained model
@@ -137,7 +139,6 @@ def compute_mutational_effect(model, wild_type_seq, mutant_seq, tokenizer, devic
     
     # Find the mutation position
     if len(wild_type_seq) != len(mutant_seq):
-        # For now, skip sequences with length differences
         return None
     
     diff_positions = [(i, wild_type_seq[i], mutant_seq[i]) 
@@ -145,36 +146,37 @@ def compute_mutational_effect(model, wild_type_seq, mutant_seq, tokenizer, devic
                       if wild_type_seq[i] != mutant_seq[i]]
     
     if len(diff_positions) == 0:
-        return 0.0  # No mutation
+        return 0.0
     
     if len(diff_positions) > 1:
-        # Multiple mutations - for now, just use the first one
-        # Could be extended to handle multiple mutations
+        # Multiple mutations - use first one for now
         pass
     
     pos, wt_aa, mut_aa = diff_positions[0]
     
-    # Tokenize wild type sequence
-    wt_tokens = tokenizer(wild_type_seq, return_tensors="pt")
-    wt_input_ids = wt_tokens['input_ids'].to(device)
-    wt_attention_mask = wt_tokens['attention_mask'].to(device)
+    # Create a masked version of the wild-type sequence
+    # Replace the amino acid at the mutation position with the mask token
+    masked_seq = wild_type_seq[:pos] + '<mask>' + wild_type_seq[pos+1:]
     
-    # Get model outputs for wild type
+    # Tokenize masked sequence
+    masked_tokens = tokenizer(masked_seq, return_tensors="pt")
+    masked_input_ids = masked_tokens['input_ids'].to(device)
+    masked_attention_mask = masked_tokens['attention_mask'].to(device)
+    
+    # Get model outputs for masked sequence
     with torch.no_grad():
-        wt_outputs = model(input_ids=wt_input_ids, attention_mask=wt_attention_mask)
-        wt_logits = model.lm_head(wt_outputs['sequence_output'])
-        wt_log_probs = torch.log_softmax(wt_logits, dim=-1)[0]  # (seq_len, vocab_size)
+        outputs = model(input_ids=masked_input_ids, attention_mask=masked_attention_mask)
+        logits = model.lm_head(outputs['sequence_output'])
+        log_probs = torch.log_softmax(logits, dim=-1)[0]  # (seq_len, vocab_size)
         
-        # Get token IDs for the amino acids using the tokenizer
-        # ESM tokenizers encode amino acids as single characters
+        # Get token IDs for amino acids
         try:
             wt_token_id = tokenizer.encode(wt_aa, add_special_tokens=False)[0]
             mut_token_id = tokenizer.encode(mut_aa, add_special_tokens=False)[0]
         except (IndexError, ValueError):
-            # Fallback to hardcoded mapping if tokenizer encoding fails
             aa_to_token = {
-                'A': 6, 'R': 12, 'N': 15, 'D': 13, 'C': 29, 'Q': 23, 'E': 17, 'G': 20, 
-                'H': 24, 'I': 25, 'L': 18, 'K': 19, 'M': 21, 'F': 26, 'P': 27, 'S': 28, 
+                'A': 6, 'R': 12, 'N': 15, 'D': 13, 'C': 29, 'Q': 23, 'E': 17, 'G': 20,
+                'H': 24, 'I': 25, 'L': 18, 'K': 19, 'M': 21, 'F': 26, 'P': 27, 'S': 28,
                 'T': 30, 'W': 31, 'Y': 32, 'V': 22
             }
             wt_token_id = aa_to_token.get(wt_aa, None)
@@ -184,19 +186,18 @@ def compute_mutational_effect(model, wild_type_seq, mutant_seq, tokenizer, devic
             return None
         
         # Position in tokenized sequence (accounting for BOS token)
-        # ESM2 adds BOS token at the beginning
-        token_pos = pos + 1  # +1 for BOS token
+        token_pos = pos + 1
         
-        # Make sure token_pos is within bounds
-        if token_pos >= wt_log_probs.shape[0]:
+        if token_pos >= log_probs.shape[0]:
             return None
         
-        # Get log probabilities
-        log_prob_wt = wt_log_probs[token_pos, wt_token_id].item()
-        log_prob_mut = wt_log_probs[token_pos, mut_token_id].item()
+        # Get log probabilities from the MASKED position
+        log_prob_wt = log_probs[token_pos, wt_token_id].item()
+        log_prob_mut = log_probs[token_pos, mut_token_id].item()
         
-        # Mutational effect: log P(mutant) - log P(wild_type)
-        # Positive = mutation is favored, Negative = mutation is disfavored
+        # Mutational effect: log P(mutant) - log P(wild-type)
+        # Positive = mutation is favored by the model
+        # Negative = mutation is disfavored
         mut_effect = log_prob_mut - log_prob_wt
     
     return mut_effect
