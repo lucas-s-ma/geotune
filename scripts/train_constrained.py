@@ -6,6 +6,7 @@ except for Masked Language Modeling (MLM) are treated as constraints.
 import os
 import sys
 from pathlib import Path
+from datetime import datetime
 import torch
 import transformers
 import torch.nn as nn
@@ -379,10 +380,19 @@ def main():
 
     # Use separate output directory for constrained training (unless explicitly overridden)
     if args.output_dir is None:
-        config.training.output_dir = "outputs_constrained"
-        print(f"\n{'='*80}")
-        print(f"CONSTRAINED TRAINING: Using output directory: {config.training.output_dir}")
-        print(f"{'='*80}\n")
+        args.output_dir = "outputs_constrained"
+    
+    # Generate unique output directory name based on epsilon parameters and timestamp
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    config.training.output_dir = os.path.join(
+        args.output_dir,
+        f"run_eps{args.dihedral_epsilon}-{args.gnn_epsilon}-{args.foldseek_epsilon}_{timestamp}"
+    )
+    os.makedirs(config.training.output_dir, exist_ok=True)
+    print(f"\n{'='*80}")
+    print(f"CONSTRAINED TRAINING: Using output directory: {config.training.output_dir}")
+    print(f"Epsilon values - Dihedral: {args.dihedral_epsilon}, GNN: {args.gnn_epsilon}, Foldseek: {args.foldseek_epsilon}")
+    print(f"{'='*80}\n")
 
     # Add new constrained-learning arguments to the config for logging
     config.training.dual_learning_rate = args.dual_learning_rate
@@ -406,7 +416,8 @@ def main():
                    f"plr{config.training.learning_rate}_"
                    f"dlr{config.training.dual_learning_rate}_"
                    f"eps{config.training.dihedral_epsilon}-{config.training.gnn_epsilon}-{config.training.foldseek_epsilon}_"
-                   f"bs{config.training.batch_size}")
+                   f"bs{config.training.batch_size}_"
+                   f"{timestamp}")
 
         wandb.init(project=config.logging.project_name, config=OmegaConf.to_container(config), name=run_name)
 

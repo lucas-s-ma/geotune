@@ -4,6 +4,7 @@ Main training script for ESM2 with geometric constraints and LoRA
 import os
 import sys
 from pathlib import Path
+from datetime import datetime
 
 # Add the project root directory to the Python path
 project_root = Path(__file__).parent.parent
@@ -529,6 +530,16 @@ def main():
             }
         })
 
+    # Generate timestamp for unique output directory
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    
+    # Override output directory with timestamp to ensure each run is saved separately
+    config.training.output_dir = os.path.join(args.output_dir, f"run_{timestamp}")
+    os.makedirs(config.training.output_dir, exist_ok=True)
+    print(f"\n{'='*80}")
+    print(f"Output directory: {config.training.output_dir}")
+    print(f"{'='*80}\n")
+
     # Set random seed
     torch.manual_seed(config.training.seed)
     if torch.cuda.is_available():
@@ -543,12 +554,13 @@ def main():
         # Extract short model name (e.g., "8M" from "facebook/esm2_t6_8M_UR50D")
         model_name_parts = config.model.model_name.split('/')[-1].split('_')
         model_short = next((part for part in model_name_parts if 'M' in part), 'unknown')
-        
+
         # Create descriptive run name for unconstrained training
         run_name = (f"unconstrained_{model_short}_"
                    f"lr{config.training.learning_rate}_"
-                   f"bs{config.training.batch_size}")
-        
+                   f"bs{config.training.batch_size}_"
+                   f"{timestamp}")
+
         wandb.init(
             project=config.logging.project_name,
             config=OmegaConf.to_container(config),

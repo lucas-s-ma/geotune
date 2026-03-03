@@ -10,6 +10,7 @@ data/processed/
 data/pdb_bk/
 data/processed_bk/
 data/gearnet_embeddings_512
+DMS_ProteinGym_substitutions/
 
 # Output files
 outputs/
