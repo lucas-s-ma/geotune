@@ -6,7 +6,11 @@ computing Spearman correlation between predicted and experimental scores for eac
 then reporting the average Spearman correlation across all files.
 
 Usage:
+    # With trained LoRA model
     python scripts/evaluate_dms.py --model_path outputs/run_20260302_143521/best_model/lora_adapters --dms_dir DMS_ProteinGym_substitutions
+    
+    # With raw base model (no LoRA)
+    python scripts/evaluate_dms.py --dms_dir DMS_ProteinGym_substitutions --model_name facebook/esm2_t30_150M_UR50D
 """
 import os
 import sys
@@ -25,25 +29,26 @@ from scipy.stats import spearmanr
 project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root))
 
-from models.geotune_esm_model import load_esm_with_lora
+from models.geotune_esm_model import load_esm_with_lora, GeoTuneESMModel
+from transformers import EsmModel, EsmConfig, EsmTokenizer
 
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Evaluate trained GeoTune model on DMS substitution benchmarks")
-    parser.add_argument("--model_path", type=str, required=True,
-                       help="Path to trained model (LoRA adapters directory)")
+    parser.add_argument("--model_path", type=str, default=None,
+                       help="Path to trained model (LoRA adapters directory). If not provided, uses raw base model.")
     parser.add_argument("--dms_dir", type=str, required=True,
                        help="Path to directory containing DMS substitution CSV files")
-    parser.add_argument("--model_name", type=str, default="facebook/esm2_t30_150M_UR50D",
+    parser.add_argument("--model_name", type=str, default="facebook/esm2_t6_8M_UR50D",
                        help="Base model name")
     parser.add_argument("--batch_size", type=int, default=8, help="Batch size for evaluation")
     parser.add_argument("--output_file", type=str, default=None,
-                       help="Path to save results (default: model_path/dms_results.pkl)")
+                       help="Path to save results (default: auto-generated based on model)")
     parser.add_argument("--device", type=str, default=None,
                        help="Device to use (default: cuda if available)")
     parser.add_argument("--max_sequences", type=int, default=None,
                        help="Maximum number of sequences to evaluate per DMS file (for debugging)")
-    
+
     return parser.parse_args()
 
 
@@ -319,55 +324,70 @@ def evaluate_dms_file(model, dms_file, tokenizer, device, max_sequences=None):
 
 def main():
     args = parse_args()
-    
+
     # Setup device
     if args.device:
         device = torch.device(args.device)
     else:
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
-    
-    # Load model with LoRA adapters
+
+    # Load model - either with LoRA adapters or raw base model
     print("Loading model...")
-    model, tokenizer = load_esm_with_lora(
-        model_name=args.model_name,
-        lora_weights_path=args.model_path
-    )
+    if args.model_path:
+        # Load trained model with LoRA adapters
+        print(f"Loading LoRA adapters from: {args.model_path}")
+        model, tokenizer = load_esm_with_lora(
+            model_name=args.model_name,
+            lora_weights_path=args.model_path
+        )
+        model_type = "LoRA-finetuned"
+    else:
+        # Load raw base model without LoRA
+        print(f"Loading raw base model: {args.model_name}")
+        config = EsmConfig.from_pretrained(args.model_name)
+        base_model = EsmModel.from_pretrained(args.model_name, config=config)
+        model = GeoTuneESMModel(base_model=base_model, config=config, lora_config=None)
+        tokenizer = EsmTokenizer.from_pretrained(args.model_name)
+        model_type = "Raw base model"
+    
     model.to(device)
     model.eval()
     
+    print(f"Model type: {model_type}")
+
     # Find all DMS files
     dms_files = []
     for f in os.listdir(args.dms_dir):
         if f.endswith('.csv'):
             dms_files.append(os.path.join(args.dms_dir, f))
-    
+
     print(f"Found {len(dms_files)} DMS files to evaluate")
-    
+
     # Evaluate on each DMS file
     all_results = []
     spearman_correlations = []
-    
+
     for dms_file in tqdm(dms_files, desc="Evaluating DMS files"):
         print(f"\n{'='*80}")
         print(f"Evaluating: {os.path.basename(dms_file)}")
         print(f"{'='*80}")
-        
+
         result = evaluate_dms_file(
-            model, 
-            dms_file, 
-            tokenizer, 
-            device, 
+            model,
+            dms_file,
+            tokenizer,
+            device,
             max_sequences=args.max_sequences
         )
         all_results.append(result)
-        
+
         if result['spearman'] is not None:
             spearman_correlations.append(result['spearman'])
             print(f"Spearman correlation: {result['spearman']:.4f} (p={result['p_value']:.2e})")
         else:
             print(f"Error: {result.get('error', 'Unknown error')}")
-    
+
     # Compute average Spearman correlation
     if spearman_correlations:
         avg_spearman = np.mean(spearman_correlations)
@@ -392,15 +412,23 @@ def main():
     if args.output_file:
         output_file = args.output_file
     else:
-        # Default: save to model directory
-        output_dir = os.path.dirname(args.model_path)
+        # Default: save to model directory or current directory for raw model
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        output_file = os.path.join(output_dir, f"dms_results_{timestamp}.pkl")
-    
+        if args.model_path:
+            output_dir = os.path.dirname(args.model_path)
+            output_file = os.path.join(output_dir, f"dms_results_{timestamp}.pkl")
+        else:
+            # For raw base model, save to dms_results directory
+            model_short = args.model_name.split('/')[-1].replace('_', '-')
+            output_dir = f"dms_results/{model_short}"
+            os.makedirs(output_dir, exist_ok=True)
+            output_file = os.path.join(output_dir, f"dms_results_{timestamp}.pkl")
+
     os.makedirs(os.path.dirname(output_file), exist_ok=True)
-    
+
     results_to_save = {
         'model_path': args.model_path,
+        'model_type': 'LoRA-finetuned' if args.model_path else 'Raw base model',
         'dms_dir': args.dms_dir,
         'model_name': args.model_name,
         'timestamp': datetime.now().isoformat(),
@@ -411,22 +439,24 @@ def main():
         'median_spearman': median_spearman,
         'num_files': len(spearman_correlations)
     }
-    
+
     with open(output_file, 'wb') as f:
         pickle.dump(results_to_save, f)
-    
+
     print(f"\nResults saved to: {output_file}")
-    
+
     # Also save a text summary
     summary_file = output_file.replace('.pkl', '.txt')
     with open(summary_file, 'w') as f:
         f.write("DMS Substitution Benchmark Results\n")
         f.write("="*80 + "\n\n")
-        f.write(f"Model: {args.model_path}\n")
+        f.write(f"Model type: {'LoRA-finetuned' if args.model_path else 'Raw base model'}\n")
+        if args.model_path:
+            f.write(f"Model path: {args.model_path}\n")
         f.write(f"Base model: {args.model_name}\n")
         f.write(f"DMS directory: {args.dms_dir}\n")
         f.write(f"Evaluation date: {datetime.now().isoformat()}\n\n")
-        
+
         f.write("SUMMARY\n")
         f.write("-"*80 + "\n")
         f.write(f"Number of DMS files evaluated: {len(spearman_correlations)}\n")
@@ -437,13 +467,13 @@ def main():
             f.write(f"Max Spearman correlation: {np.max(spearman_correlations):.4f}\n")
         else:
             f.write("No valid Spearman correlations computed\n")
-        
+
         f.write("\n" + "="*80 + "\n")
         f.write("INDIVIDUAL RESULTS\n")
         f.write("-"*80 + "\n")
         f.write(f"{'File':<60} {'Spearman':<12} {'Num mutants':<12}\n")
         f.write("-"*80 + "\n")
-        
+
         for result in sorted(all_results, key=lambda x: x['spearman'] or -999, reverse=True):
             spearman_str = f"{result['spearman']:.4f}" if result['spearman'] is not None else "N/A"
             f.write(f"{result['file']:<60} {spearman_str:<12} {result.get('valid_mutants', result.get('num_mutants', 'N/A')):<12}\n")
