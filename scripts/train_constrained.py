@@ -24,7 +24,8 @@ project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root))
 
 from models.geotune_esm_model import load_esm_with_lora
-from utils.constrained_dihedral_utils import ConstrainedDihedralAngleConstraint, MultiConstraintLagrangian, compute_dihedral_angles_from_coordinates
+from utils.constrained_dihedral_utils import MultiConstraintLagrangian, compute_dihedral_angles_from_coordinates
+from utils.dihedral_utils import DihedralAngleConstraint
 from utils.data_utils import EfficientProteinDataset, collate_fn
 from utils.structure_alignment_utils import StructureAlignmentLoss, PretrainedGNNWrapper
 
@@ -91,19 +92,27 @@ def train_epoch(model, dataloader, optimizer, scheduler, lagrangian_module, dihe
             mlm_loss = nn.CrossEntropyLoss()(seq_logits.view(-1, seq_logits.size(-1)), labels.view(-1))
 
             # 2. Calculate Per-Sample Constraint Losses
-            # Dihedral Constraint
+            # Dihedral Constraint - use DihedralAngleConstraint for consistency with train.py
+            # Note: We need per-sample losses for the constrained learning framework
+            dihedral_results = dihedral_module(
+                sequence_embeddings=pLM_embeddings,
+                n_coords=n_coords,
+                ca_coords=ca_coords,
+                c_coords=c_coords,
+                attention_mask=attention_mask
+            )
+            # Extract per-sample dihedral losses (SmoothL1 loss, consistent with train.py)
+            # The DihedralAngleConstraint returns aggregated loss, so we compute per-sample here
             cos_true_phi, cos_true_psi = compute_dihedral_angles_from_coordinates(n_coords, ca_coords, c_coords)
             cos_pred_phi, cos_pred_psi = dihedral_module.predict_dihedral_angles(pLM_embeddings)
 
             min_len_phi = min(cos_true_phi.shape[1], cos_pred_phi.shape[1])
             phi_mask = attention_mask[:, 1:1+min_len_phi].float()
-            phi_loss_sq = (cos_true_phi[:, :min_len_phi] - cos_pred_phi[:, :min_len_phi])**2
-            phi_loss_per_sample = (phi_loss_sq * phi_mask).sum(dim=1) / phi_mask.sum(dim=1).clamp(min=1.0)
+            phi_loss_per_sample = (dihedral_module.loss_fn(cos_pred_phi[:, :min_len_phi], cos_true_phi[:, :min_len_phi]) * phi_mask).sum(dim=1) / phi_mask.sum(dim=1).clamp(min=1.0)
 
             min_len_psi = min(cos_true_psi.shape[1], cos_pred_psi.shape[1])
             psi_mask = attention_mask[:, :min_len_psi].float()
-            psi_loss_sq = (cos_true_psi[:, :min_len_psi] - cos_pred_psi[:, :min_len_psi])**2
-            psi_loss_per_sample = (psi_loss_sq * psi_mask).sum(dim=1) / psi_mask.sum(dim=1).clamp(min=1.0)
+            psi_loss_per_sample = (dihedral_module.loss_fn(cos_pred_psi[:, :min_len_psi], cos_true_psi[:, :min_len_psi]) * psi_mask).sum(dim=1) / psi_mask.sum(dim=1).clamp(min=1.0)
 
             per_sample_dihedral_losses = phi_loss_per_sample + psi_loss_per_sample
 
@@ -119,8 +128,9 @@ def train_epoch(model, dataloader, optimizer, scheduler, lagrangian_module, dihe
                         pGNN_embeddings = gnn_module(n_coords, ca_coords, c_coords)
 
                 struct_align_results = alignment_module(pLM_embeddings, pGNN_embeddings, structure_tokens, attention_mask)
-                per_sample_gnn_losses = struct_align_results.get('latent_loss_per_sample', per_sample_gnn_losses)
-                per_sample_foldseek_losses = struct_align_results.get('physical_loss_per_sample', per_sample_foldseek_losses)
+                # Apply the same weighting as in train.py (latent_weight and physical_weight are typically 0.5)
+                per_sample_gnn_losses = struct_align_results.get('latent_loss_per_sample', per_sample_gnn_losses) * alignment_module.latent_weight
+                per_sample_foldseek_losses = struct_align_results.get('physical_loss_per_sample', per_sample_foldseek_losses) * alignment_module.physical_weight
 
             # 3. Compute the Lagrangian
             lagrangian = lagrangian_module.compute_lagrangian(
@@ -255,21 +265,30 @@ def validate(model, dataloader, dihedral_module, alignment_module, gnn_module, d
             pLM_embeddings = outputs['sequence_output']
             forward_time += time.time() - forward_start
 
-            # Dihedral Loss
+            # Dihedral Loss - use SmoothL1Loss for consistency with train.py
             loss_start = time.time()
+            dihedral_results = dihedral_module(
+                sequence_embeddings=pLM_embeddings,
+                n_coords=n_coords,
+                ca_coords=ca_coords,
+                c_coords=c_coords,
+                attention_mask=attention_mask
+            )
+            # Compute per-sample losses for logging consistency
             cos_true_phi, cos_true_psi = compute_dihedral_angles_from_coordinates(n_coords, ca_coords, c_coords)
             cos_pred_phi, cos_pred_psi = dihedral_module.predict_dihedral_angles(pLM_embeddings)
+
             min_len_phi = min(cos_true_phi.shape[1], cos_pred_phi.shape[1])
             phi_mask = attention_mask[:, 1:1+min_len_phi].float()
-            phi_loss_sq = (cos_true_phi[:, :min_len_phi] - cos_pred_phi[:, :min_len_phi])**2
-            phi_loss_per_sample = (phi_loss_sq * phi_mask).sum(dim=1) / phi_mask.sum(dim=1).clamp(min=1.0)
+            phi_loss_per_sample = (dihedral_module.loss_fn(cos_pred_phi[:, :min_len_phi], cos_true_phi[:, :min_len_phi]) * phi_mask).sum(dim=1) / phi_mask.sum(dim=1).clamp(min=1.0)
+
             min_len_psi = min(cos_true_psi.shape[1], cos_pred_psi.shape[1])
             psi_mask = attention_mask[:, :min_len_psi].float()
-            psi_loss_sq = (cos_true_psi[:, :min_len_psi] - cos_pred_psi[:, :min_len_psi])**2
-            psi_loss_per_sample = (psi_loss_sq * psi_mask).sum(dim=1) / psi_mask.sum(dim=1).clamp(min=1.0)
+            psi_loss_per_sample = (dihedral_module.loss_fn(cos_pred_psi[:, :min_len_psi], cos_true_psi[:, :min_len_psi]) * psi_mask).sum(dim=1) / psi_mask.sum(dim=1).clamp(min=1.0)
+
             total_dihedral_loss += (phi_loss_per_sample + psi_loss_per_sample).mean().item()
 
-            # Structure Alignment Losses
+            # Structure Alignment Losses - apply same weighting as train.py
             if alignment_module is not None and 'structural_tokens' in batch:
                 structure_tokens = batch['structural_tokens'].to(device)
                 if has_precomputed_embeddings:
@@ -280,10 +299,11 @@ def validate(model, dataloader, dihedral_module, alignment_module, gnn_module, d
                 struct_align_results = alignment_module(pLM_embeddings, pGNN_embeddings, structure_tokens, attention_mask)
 
                 # Ensure we handle cases where loss is not computed (e.g., all NaNs were skipped)
+                # Apply the same weighting as in train.py (latent_weight and physical_weight are typically 0.5)
                 if torch.is_tensor(struct_align_results['latent_loss']):
-                    total_gnn_loss += struct_align_results['latent_loss'].item()
+                    total_gnn_loss += (struct_align_results['latent_loss'] * alignment_module.latent_weight).item()
                 if torch.is_tensor(struct_align_results['physical_loss']):
-                    total_foldseek_loss += struct_align_results['physical_loss'].item()
+                    total_foldseek_loss += (struct_align_results['physical_loss'] * alignment_module.physical_weight).item()
             
             loss_time += time.time() - loss_start
 

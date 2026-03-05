@@ -82,19 +82,23 @@ class ConstrainedDihedralAngleConstraint(nn.Module):
     """
     Implements constrained learning framework for dihedral angles (phi/psi)
     using primal-dual optimization approach.
+    Uses SmoothL1Loss for consistency with DihedralAngleConstraint.
     """
     def __init__(self, hidden_dim: int, constraint_weight: float = 1.0):
         super().__init__()
         self.constraint_weight = constraint_weight
+
+        # Use SmoothL1Loss for consistency with DihedralAngleConstraint
+        self.loss_fn = nn.SmoothL1Loss(reduction='none')
 
         # Linear layers to predict dihedral angles from embeddings
         self.phi_predictor = nn.Linear(hidden_dim, 1)
         self.psi_predictor = nn.Linear(hidden_dim, 1)
 
         # Initialize layers with small random weights
-        nn.init.xavier_uniform_(self.phi_predictor.weight)
+        nn.init.xavier_uniform_(self.phi_predictor.weight, gain=nn.init.calculate_gain('tanh'))
         nn.init.zeros_(self.phi_predictor.bias)
-        nn.init.xavier_uniform_(self.psi_predictor.weight)
+        nn.init.xavier_uniform_(self.psi_predictor.weight, gain=nn.init.calculate_gain('tanh'))
         nn.init.zeros_(self.psi_predictor.bias)
 
     def forward(self, sequence_embeddings, n_coords, ca_coords, c_coords, attention_mask=None):
@@ -114,16 +118,16 @@ class ConstrainedDihedralAngleConstraint(nn.Module):
         # Predict dihedral angles from embeddings
         cos_pred_phi, cos_pred_psi = self.predict_dihedral_angles(sequence_embeddings)
 
-        # Calculate constraint losses (masked MSE)
+        # Calculate constraint losses (masked SmoothL1)
         min_len_phi = min(cos_true_phi.shape[1], cos_pred_phi.shape[1])
         phi_mask = attention_mask[:, 1:1+min_len_phi].float()
-        phi_loss_sq = (cos_true_phi[:, :min_len_phi] - cos_pred_phi[:, :min_len_phi])**2
-        phi_loss = (phi_loss_sq * phi_mask).sum() / phi_mask.sum().clamp(min=1.0)
+        phi_loss = self.loss_fn(cos_pred_phi[:, :min_len_phi], cos_true_phi[:, :min_len_phi])
+        phi_loss = (phi_loss * phi_mask).sum() / phi_mask.sum().clamp(min=1.0)
 
         min_len_psi = min(cos_true_psi.shape[1], cos_pred_psi.shape[1])
         psi_mask = attention_mask[:, :min_len_psi].float()
-        psi_loss_sq = (cos_true_psi[:, :min_len_psi] - cos_pred_psi[:, :min_len_psi])**2
-        psi_loss = (psi_loss_sq * psi_mask).sum() / psi_mask.sum().clamp(min=1.0)
+        psi_loss = self.loss_fn(cos_pred_psi[:, :min_len_psi], cos_true_psi[:, :min_len_psi])
+        psi_loss = (psi_loss * psi_mask).sum() / psi_mask.sum().clamp(min=1.0)
 
         # Combine constraint losses
         constraint_loss = phi_loss + psi_loss
@@ -158,7 +162,7 @@ class ConstrainedDihedralAngleConstraint(nn.Module):
 
     def angle_consistency_loss(self, true_cos, pred_cos, attention_mask=None, angle_type='phi'):
         """
-        Calculate loss between true and predicted angle cosines
+        Calculate loss between true and predicted angle cosines using SmoothL1 Loss.
         """
         if true_cos.numel() == 0 or pred_cos.numel() == 0:
             return torch.tensor(0.0, device=true_cos.device, requires_grad=True)
@@ -168,9 +172,8 @@ class ConstrainedDihedralAngleConstraint(nn.Module):
         true_cos = true_cos[:, :min_len]
         pred_cos = pred_cos[:, :min_len]
 
-        # Calculate cosine difference loss (MSE for dihedral constraints)
-        cos_diff = true_cos - pred_cos
-        angle_loss = torch.mean(cos_diff ** 2)  # MSE for dihedral constraints
+        # Calculate SmoothL1 loss
+        loss = self.loss_fn(pred_cos, true_cos)
 
         # Apply mask if available
         if attention_mask is not None:
@@ -183,9 +186,13 @@ class ConstrainedDihedralAngleConstraint(nn.Module):
                 valid_mask = attention_mask[:, :min_len].float()
 
             if valid_mask.sum() > 0:
-                angle_loss = torch.sum((cos_diff ** 2) * valid_mask) / torch.sum(valid_mask)
+                loss = (loss * valid_mask).sum() / valid_mask.sum()
+            else:
+                loss = torch.tensor(0.0, device=true_cos.device, requires_grad=True)
+        else:
+            loss = loss.mean()
 
-        return angle_loss
+        return loss
 
 
 class MultiConstraintLagrangian(nn.Module):
