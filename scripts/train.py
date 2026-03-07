@@ -205,11 +205,14 @@ def train_epoch(model, dataloader, optimizer, scheduler, dihedral_constraints, d
             # Scale loss for gradient accumulation
             combined_loss = combined_loss / gradient_accumulation_steps
 
-        # Log only physical and latent losses at batch level for debugging
-        if config.logging.use_wandb:
+        # Log batch-level metrics (every 10 batches for consistency with train_constrained.py)
+        if batch_idx % 10 == 0 and config.logging.use_wandb:
             wandb.log({
-                'train_batch_foldseek_loss': physical_loss.item(),  # Physical corresponds to structural token prediction
-                'train_batch_gnn_loss': latent_loss.item(),  # Latent corresponds to contrastive GNN learning
+                'train_batch_mlm_loss': mlm_loss.item(),
+                'train_batch_dihedral_loss': total_dihedral_loss.item(),
+                'train_batch_gnn_loss': latent_loss.item(),
+                'train_batch_foldseek_loss': physical_loss.item(),
+                'learning_rate': scheduler.get_last_lr()[0]
             })
 
         # Backward pass with gradient accumulation and mixed precision
@@ -285,13 +288,14 @@ def train_epoch(model, dataloader, optimizer, scheduler, dihedral_constraints, d
     # Log epoch averages for wandb (these are the important epoch-level metrics)
     if config.logging.use_wandb:
         wandb.log({
-            'epoch': len(dataloader),  # Track as total batches in epoch
+            'epoch': epoch,
             'train_loss': avg_loss,
             'train_mlm_loss': avg_mlm_loss,
             'train_dihedral_loss': avg_constraint_loss,
             'train_struct_align_loss': avg_struct_align_loss,
-            'train_foldseek_loss': avg_physical_loss,  # Physical loss corresponds to Foldseek-like task
-            'train_gnn_loss': avg_latent_loss,  # Latent loss corresponds to GNN-like task
+            'train_foldseek_loss': avg_physical_loss,
+            'train_gnn_loss': avg_latent_loss,
+            'learning_rate': scheduler.get_last_lr()[0]
         })
 
     return avg_loss, avg_mlm_loss, avg_constraint_loss, avg_struct_align_loss, avg_latent_loss, avg_physical_loss
@@ -467,17 +471,9 @@ def validate(model, dataloader, dihedral_constraints, device, config, structure_
     avg_latent_loss = struct_align_latent_loss / num_batches if num_batches > 0 else 0
     avg_physical_loss = struct_align_physical_loss / num_batches if num_batches > 0 else 0
 
-    # Log validation epoch averages for wandb (these are the important epoch-level metrics)
-    if config.logging.use_wandb:
-        wandb.log({
-            'val_loss': avg_loss,
-            'val_mlm_loss': avg_mlm_loss,
-            'val_dihedral_loss': avg_constraint_loss,
-            'val_struct_align_loss': avg_struct_align_loss,
-            'val_foldseek_loss': avg_physical_loss,
-            'val_gnn_loss': avg_latent_loss,
-        })
-    
+    # Note: Validation losses are logged in the main training loop for consistency
+    # with train_constrained.py, so both scripts log val metrics at the same point
+
     # Print detailed timing statistics
     print(f"\n{'='*80}")
     print(f"VALIDATION TIMING:")
@@ -855,7 +851,8 @@ def main():
             })
 
         print(f"Epoch {epoch+1} completed:")
-        print(f"  Train Loss: {train_loss:.4f} | Val Loss: {val_loss:.4f}")
+        print(f"  Train | Loss: {train_loss:.4f}, MLM: {train_mlm_loss:.4f}, Dihedral: {train_constraint_loss:.4f}, GNN: {train_latent_loss:.4f}, Foldseek: {train_physical_loss:.4f}, StructAlign: {train_struct_align_loss:.4f}")
+        print(f"  Val   | Loss: {val_loss:.4f}, MLM: {val_mlm_loss:.4f}, Dihedral: {val_constraint_loss:.4f}, GNN: {val_latent_loss:.4f}, Foldseek: {val_physical_loss:.4f}, StructAlign: {val_struct_align_loss:.4f}")
 
         # Save model checkpoint if it has the best validation loss
         if val_loss < best_val_loss:

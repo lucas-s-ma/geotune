@@ -180,37 +180,44 @@ def train_epoch(model, dataloader, optimizer, scheduler, lagrangian_module, dihe
         total_dihedral_loss += per_sample_dihedral_losses.mean().item()
         total_gnn_loss += per_sample_gnn_losses.mean().item()
         total_foldseek_loss += per_sample_foldseek_losses.mean().item()
+        # Track structure alignment loss (sum of gnn + foldseek) for consistency with train.py
+        total_struct_align_loss += (per_sample_gnn_losses.mean().item() + per_sample_foldseek_losses.mean().item())
 
+        # Log batch-level metrics with consistent naming (every 10 batches)
         if batch_idx % 10 == 0 and config.logging.use_wandb:
             lambda_stats = lagrangian_module.get_lambda_stats()
             wandb.log({
-                'train_batch/lagrangian_loss': lagrangian.item(),
-                'train_batch/mlm_loss': mlm_loss.item(),
-                'train_batch/dihedral_loss': per_sample_dihedral_losses.mean().item(),
-                'train_batch/gnn_loss': per_sample_gnn_losses.mean().item(),
-                'train_batch/foldseek_loss': per_sample_foldseek_losses.mean().item(),
-                'train_lambda/dihedral_mean': lambda_stats['lam_dihedral_mean'],
-                'train_lambda/dihedral_std': lambda_stats['lam_dihedral_std'],
-                'train_lambda/dihedral_min': lambda_stats['lam_dihedral_min'],
-                'train_lambda/dihedral_max': lambda_stats['lam_dihedral_max'],
-                'train_lambda/gnn_mean': lambda_stats['lam_gnn_mean'],
-                'train_lambda/gnn_std': lambda_stats['lam_gnn_std'],
-                'train_lambda/gnn_min': lambda_stats['lam_gnn_min'],
-                'train_lambda/gnn_max': lambda_stats['lam_gnn_max'],
-                'train_lambda/foldseek_mean': lambda_stats['lam_foldseek_mean'],
-                'train_lambda/foldseek_std': lambda_stats['lam_foldseek_std'],
-                'train_lambda/foldseek_min': lambda_stats['lam_foldseek_min'],
-                'train_lambda/foldseek_max': lambda_stats['lam_foldseek_max'],
+                # Core losses (consistent with train.py)
+                'train_batch_mlm_loss': mlm_loss.item(),
+                'train_batch_dihedral_loss': per_sample_dihedral_losses.mean().item(),
+                'train_batch_gnn_loss': per_sample_gnn_losses.mean().item(),
+                'train_batch_foldseek_loss': per_sample_foldseek_losses.mean().item(),
+                # Constrained learning specific metrics
+                'train_batch_lagrangian_loss': lagrangian.item(),
+                'train_lambda_dihedral_mean': lambda_stats['lam_dihedral_mean'],
+                'train_lambda_dihedral_std': lambda_stats['lam_dihedral_std'],
+                'train_lambda_dihedral_min': lambda_stats['lam_dihedral_min'],
+                'train_lambda_dihedral_max': lambda_stats['lam_dihedral_max'],
+                'train_lambda_gnn_mean': lambda_stats['lam_gnn_mean'],
+                'train_lambda_gnn_std': lambda_stats['lam_gnn_std'],
+                'train_lambda_gnn_min': lambda_stats['lam_gnn_min'],
+                'train_lambda_gnn_max': lambda_stats['lam_gnn_max'],
+                'train_lambda_foldseek_mean': lambda_stats['lam_foldseek_mean'],
+                'train_lambda_foldseek_std': lambda_stats['lam_foldseek_std'],
+                'train_lambda_foldseek_min': lambda_stats['lam_foldseek_min'],
+                'train_lambda_foldseek_max': lambda_stats['lam_foldseek_max'],
                 'learning_rate': scheduler.get_last_lr()[0]
             })
 
     num_batches = len(dataloader)
+    avg_struct_align_loss = (total_gnn_loss + total_foldseek_loss) / num_batches if num_batches > 0 else 0
     return (
         total_lagrangian_loss / num_batches,
         total_mlm_loss / num_batches,
         total_dihedral_loss / num_batches,
         total_gnn_loss / num_batches,
-        total_foldseek_loss / num_batches
+        total_foldseek_loss / num_batches,
+        avg_struct_align_loss
     )
 
 def validate(model, dataloader, dihedral_module, alignment_module, gnn_module, device, config):
@@ -224,8 +231,8 @@ def validate(model, dataloader, dihedral_module, alignment_module, gnn_module, d
         alignment_module.eval()
     if gnn_module is not None:
         gnn_module.eval()
-    
-    total_mlm_loss, total_dihedral_loss, total_gnn_loss, total_foldseek_loss = 0, 0, 0, 0
+
+    total_mlm_loss, total_dihedral_loss, total_gnn_loss, total_foldseek_loss, total_struct_align_loss = 0, 0, 0, 0, 0
     num_batches = 0
     
     # Track timing for performance analysis
@@ -301,9 +308,17 @@ def validate(model, dataloader, dihedral_module, alignment_module, gnn_module, d
                 # Ensure we handle cases where loss is not computed (e.g., all NaNs were skipped)
                 # Apply the same weighting as in train.py (latent_weight and physical_weight are typically 0.5)
                 if torch.is_tensor(struct_align_results['latent_loss']):
-                    total_gnn_loss += (struct_align_results['latent_loss'] * alignment_module.latent_weight).item()
+                    weighted_latent_loss = struct_align_results['latent_loss'] * alignment_module.latent_weight
+                    total_gnn_loss += weighted_latent_loss.item()
+                else:
+                    weighted_latent_loss = torch.tensor(0.0, device=device)
                 if torch.is_tensor(struct_align_results['physical_loss']):
-                    total_foldseek_loss += (struct_align_results['physical_loss'] * alignment_module.physical_weight).item()
+                    weighted_physical_loss = struct_align_results['physical_loss'] * alignment_module.physical_weight
+                    total_foldseek_loss += weighted_physical_loss.item()
+                else:
+                    weighted_physical_loss = torch.tensor(0.0, device=device)
+                # Track structure alignment loss (sum of weighted gnn + foldseek)
+                total_struct_align_loss += (weighted_latent_loss.item() + weighted_physical_loss.item())
             
             loss_time += time.time() - loss_start
 
@@ -346,11 +361,13 @@ def validate(model, dataloader, dihedral_module, alignment_module, gnn_module, d
     print(f"  Embeddings: Pre-computed={precomputed_count}, On-the-fly={onthefly_count}")
     print(f"{'='*80}")
 
+    avg_struct_align_loss = total_struct_align_loss / num_batches if num_batches > 0 else 0
     return (
         total_mlm_loss / num_batches if num_batches > 0 else 0,
         total_dihedral_loss / num_batches if num_batches > 0 else 0,
         total_gnn_loss / num_batches if num_batches > 0 else 0,
-        total_foldseek_loss / num_batches if num_batches > 0 else 0
+        total_foldseek_loss / num_batches if num_batches > 0 else 0,
+        avg_struct_align_loss
     )
 
 def log_lambda_distributions(lagrangian_module, epoch, config):
@@ -553,27 +570,39 @@ def main():
     for epoch in range(config.training.num_epochs):
         print(f"\n--- Epoch {epoch+1}/{config.training.num_epochs} ---")
 
-        train_lagrangian, train_mlm, train_dihedral, train_gnn, train_foldseek = train_epoch(
+        train_lagrangian, train_mlm, train_dihedral, train_gnn, train_foldseek, train_struct_align = train_epoch(
             model, train_loader, optimizer, scheduler, lagrangian_module, dihedral_module, alignment_module, gnn_module, device, config, scaler
         )
 
-        val_mlm, val_dihedral, val_gnn, val_foldseek = validate(
+        val_mlm, val_dihedral, val_gnn, val_foldseek, val_struct_align = validate(
             model, val_loader, dihedral_module, alignment_module, gnn_module, device, config
         )
 
+        # Log epoch-level metrics with consistent naming (matching train.py for easy comparison)
         if config.logging.use_wandb:
             wandb.log({
                 'epoch': epoch,
-                'train_epoch/avg_lagrangian': train_lagrangian, 'train_epoch/avg_mlm_loss': train_mlm,
-                'train_epoch/avg_dihedral_loss': train_dihedral, 'train_epoch/avg_gnn_loss': train_gnn,
-                'train_epoch/avg_foldseek_loss': train_foldseek,
-                'val_epoch/avg_mlm_loss': val_mlm, 'val_epoch/avg_dihedral_loss': val_dihedral,
-                'val_epoch/avg_gnn_loss': val_gnn, 'val_epoch/avg_foldseek_loss': val_foldseek,
+                # Training losses (consistent with train.py)
+                'train_loss': train_lagrangian,  # Lagrangian is the total loss in constrained learning
+                'train_mlm_loss': train_mlm,
+                'train_dihedral_loss': train_dihedral,
+                'train_gnn_loss': train_gnn,
+                'train_foldseek_loss': train_foldseek,
+                'train_struct_align_loss': train_struct_align,
+                # Validation losses (consistent with train.py)
+                'val_mlm_loss': val_mlm,
+                'val_dihedral_loss': val_dihedral,
+                'val_gnn_loss': val_gnn,
+                'val_foldseek_loss': val_foldseek,
+                'val_struct_align_loss': val_struct_align,
+                # Constrained learning specific metrics
+                'train_lagrangian_loss': train_lagrangian,
+                'learning_rate': scheduler.get_last_lr()[0]
             })
 
         print(f"Epoch {epoch+1} Summary:")
-        print(f"  Train | Lagrangian: {train_lagrangian:.4f}, MLM: {train_mlm:.4f}, Dihedral: {train_dihedral:.4f}, GNN: {train_gnn:.4f}, Foldseek: {train_foldseek:.4f}")
-        print(f"  Val   | MLM: {val_mlm:.4f}, Dihedral: {val_dihedral:.4f}, GNN: {val_gnn:.4f}, Foldseek: {val_foldseek:.4f}")
+        print(f"  Train | Lagrangian: {train_lagrangian:.4f}, MLM: {train_mlm:.4f}, Dihedral: {train_dihedral:.4f}, GNN: {train_gnn:.4f}, Foldseek: {train_foldseek:.4f}, StructAlign: {train_struct_align:.4f}")
+        print(f"  Val   | MLM: {val_mlm:.4f}, Dihedral: {val_dihedral:.4f}, GNN: {val_gnn:.4f}, Foldseek: {val_foldseek:.4f}, StructAlign: {val_struct_align:.4f}")
 
         # Log lambda distributions periodically
         lambda_log_frequency = getattr(config.logging, 'lambda_log_frequency', 1)  # Default: log every epoch
