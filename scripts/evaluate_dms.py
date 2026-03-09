@@ -115,25 +115,131 @@ def get_masked_sequence_scores(model, sequences, tokenizer, device, batch_size=8
     return all_scores
 
 
+def get_masked marginal log_probs(model, sequence, tokenizer, device, batch_size=16):
+    """
+    Compute masked marginal log probabilities for ALL positions in a sequence efficiently.
+    
+    This is the key optimization: instead of one forward pass per mutation,
+    we do one forward pass per masked position in the sequence, and get
+    log probabilities for ALL 20 amino acids at once.
+    
+    For a sequence of length L, we create L masked versions (each with one position masked),
+    batch them together, and get all log probs in a single batched forward pass.
+    
+    Args:
+        model: The trained model
+        sequence: Protein sequence string
+        tokenizer: ESM tokenizer
+        device: torch device
+        batch_size: batch size for processing masked positions
+        
+    Returns:
+        log_probs_all: numpy array of shape (seq_len, vocab_size) with log probs for each position
+    """
+    model.eval()
+    seq_len = len(sequence)
+    vocab_size = 33  # ESM-2 vocabulary size (including special tokens)
+    
+    # Storage for log probabilities at each position
+    log_probs_all = np.full((seq_len, vocab_size), np.nan)
+    
+    with torch.no_grad():
+        # Process masked positions in batches
+        for batch_start in range(0, seq_len, batch_size):
+            batch_end = min(batch_start + batch_size, seq_len)
+            masked_seqs = []
+            masked_positions = []
+            
+            # Create masked versions of the sequence for each position in this batch
+            for pos in range(batch_start, batch_end):
+                masked_seq = sequence[:pos] + '<mask>' + sequence[pos+1:]
+                masked_seqs.append(masked_seq)
+                masked_positions.append(pos)
+            
+            # Tokenize all masked sequences together
+            tokens = tokenizer(masked_seqs, return_tensors="pt", padding=True)
+            input_ids = tokens['input_ids'].to(device)
+            attention_mask = tokens['attention_mask'].to(device)
+            
+            # Single forward pass for all masked positions in this batch
+            outputs = model(input_ids=input_ids, attention_mask=attention_mask)
+            logits = model.lm_head(outputs['sequence_output'])
+            log_probs = torch.log_softmax(logits, dim=-1)  # (batch, seq_len, vocab_size)
+            
+            # Extract log probs for each masked position
+            for batch_idx, pos in enumerate(masked_positions):
+                # Find the mask token position in the tokenized output
+                # The mask should be at position pos + 1 (accounting for BOS token)
+                token_pos = pos + 1
+                if token_pos < log_probs.shape[1]:
+                    log_probs_all[pos] = log_probs[batch_idx, token_pos].cpu().numpy()
+    
+    return log_probs_all
+
+
+def compute_mutational_effect_fast(log_probs_all, wt_seq, mut_seq, tokenizer):
+    """
+    Compute mutational effect from pre-computed log probabilities.
+    
+    Args:
+        log_probs_all: numpy array of shape (seq_len, vocab_size) from get_masked_marginal_log_probs
+        wt_seq: Wild type protein sequence
+        mut_seq: Mutated protein sequence  
+        tokenizer: ESM tokenizer
+        
+    Returns:
+        Mutational effect score (higher = more beneficial)
+    """
+    # Find the mutation position
+    if len(wt_seq) != len(mut_seq):
+        return None
+        
+    diff_positions = [(i, wt_seq[i], mut_seq[i]) 
+                      for i in range(len(wt_seq)) 
+                      if wt_seq[i] != mut_seq[i]]
+    
+    if len(diff_positions) == 0:
+        return 0.0
+    
+    pos, wt_aa, mut_aa = diff_positions[0]
+    
+    # Get token IDs
+    aa_to_token = {
+        'A': 6, 'R': 12, 'N': 15, 'D': 13, 'C': 29, 'Q': 23, 'E': 17, 'G': 20,
+        'H': 24, 'I': 25, 'L': 18, 'K': 19, 'M': 21, 'F': 26, 'P': 27, 'S': 28,
+        'T': 30, 'W': 31, 'Y': 32, 'V': 22
+    }
+    
+    wt_token_id = aa_to_token.get(wt_aa)
+    mut_token_id = aa_to_token.get(mut_aa)
+    
+    if wt_token_id is None or mut_token_id is None:
+        return None
+    
+    if pos >= log_probs_all.shape[0]:
+        return None
+    
+    # Check if we have valid log probs for this position
+    if np.any(np.isnan(log_probs_all[pos])):
+        return None
+    
+    # Mutational effect: log P(mutant) - log P(wild-type)
+    log_prob_wt = log_probs_all[pos, wt_token_id]
+    log_prob_mut = log_probs_all[pos, mut_token_id]
+    
+    return log_prob_mut - log_prob_wt
+
+
 def compute_mutational_effect(model, wild_type_seq, mutant_seq, tokenizer, device):
     """
     Compute the mutational effect score using Masked Marginal Likelihood (MML).
     
+    DEPRECATED: This function is kept for backwards compatibility but is inefficient.
+    Use get_masked_marginal_log_probs + compute_mutational_effect_fast instead.
+    
     For each mutation:
     1. Mask the mutated position in the wild-type sequence
     2. Compute log P(mutant | masked context) - log P(wild-type | masked context)
-    
-    This is the standard approach used in ESM-1v, ESM2, and related papers.
-    
-    Args:
-        model: The trained model
-        wild_type_seq: Wild type protein sequence
-        mutant_seq: Mutated protein sequence
-        tokenizer: ESM tokenizer
-        device: torch device
-    
-    Returns:
-        Mutational effect score (higher = more beneficial)
     """
     model.eval()
     
@@ -141,8 +247,8 @@ def compute_mutational_effect(model, wild_type_seq, mutant_seq, tokenizer, devic
     if len(wild_type_seq) != len(mutant_seq):
         return None
     
-    diff_positions = [(i, wild_type_seq[i], mutant_seq[i]) 
-                      for i in range(len(wild_type_seq)) 
+    diff_positions = [(i, wild_type_seq[i], mutant_seq[i])
+                      for i in range(len(wild_type_seq))
                       if wild_type_seq[i] != mutant_seq[i]]
     
     if len(diff_positions) == 0:
@@ -155,7 +261,6 @@ def compute_mutational_effect(model, wild_type_seq, mutant_seq, tokenizer, devic
     pos, wt_aa, mut_aa = diff_positions[0]
     
     # Create a masked version of the wild-type sequence
-    # Replace the amino acid at the mutation position with the mask token
     masked_seq = wild_type_seq[:pos] + '<mask>' + wild_type_seq[pos+1:]
     
     # Tokenize masked sequence
@@ -167,7 +272,7 @@ def compute_mutational_effect(model, wild_type_seq, mutant_seq, tokenizer, devic
     with torch.no_grad():
         outputs = model(input_ids=masked_input_ids, attention_mask=masked_attention_mask)
         logits = model.lm_head(outputs['sequence_output'])
-        log_probs = torch.log_softmax(logits, dim=-1)[0]  # (seq_len, vocab_size)
+        log_probs = torch.log_softmax(logits, dim=-1)[0]
         
         # Get token IDs for amino acids
         try:
@@ -185,138 +290,147 @@ def compute_mutational_effect(model, wild_type_seq, mutant_seq, tokenizer, devic
         if wt_token_id is None or mut_token_id is None:
             return None
         
-        # Position in tokenized sequence (accounting for BOS token)
         token_pos = pos + 1
         
         if token_pos >= log_probs.shape[0]:
             return None
         
-        # Get log probabilities from the MASKED position
         log_prob_wt = log_probs[token_pos, wt_token_id].item()
         log_prob_mut = log_probs[token_pos, mut_token_id].item()
         
-        # Mutational effect: log P(mutant) - log P(wild-type)
-        # Positive = mutation is favored by the model
-        # Negative = mutation is disfavored
-        mut_effect = log_prob_mut - log_prob_wt
-    
-    return mut_effect
+        return log_prob_mut - log_prob_wt
 
 
 def evaluate_dms_file(model, dms_file, tokenizer, device, max_sequences=None):
     """
     Evaluate model on a single DMS file.
     
+    OPTIMIZED VERSION: Uses a single set of forward passes per wild-type sequence.
+    All mutants sharing the same wild-type sequence are evaluated from the same
+    pre-computed masked marginal log probabilities.
+
     Args:
         model: The trained model
         dms_file: Path to DMS CSV file
         tokenizer: ESM tokenizer
         device: torch device
         max_sequences: Maximum number of sequences to evaluate
-    
+
     Returns:
         Dictionary with results
     """
     # Load DMS data
     df = pd.read_csv(dms_file)
-    
-    # Get wild type sequence from first row (all rows have the same mutated_sequence with single mutation)
-    # We need to reconstruct the wild type by finding the consensus or using the first mutation
-    # For ProteinGym, we can infer wild type from the mutant notation
-    
-    # Extract mutant info
-    mutants = []
+
+    # Extract mutant info and group by wild-type sequence
+    mutants_by_wt_seq = {}
     scores = []
     score_bins = []
-    
+
     for idx, row in df.iterrows():
-        if max_sequences and len(mutants) >= max_sequences:
+        if max_sequences and len(scores) >= max_sequences:
             break
-            
-        mutant_str = row['mutant']  # e.g., "I291A"
+
+        mutant_str = row['mutant']
         mutated_seq = row['mutated_sequence']
         dms_score = row['DMS_score']
         dms_score_bin = row['DMS_score_bin']
-        
-        # Parse mutant string to get wild type sequence
-        # Format: {WT_AA}{POSITION}{MUT_AA}
+
+        # Parse mutant string: {WT_AA}{POSITION}{MUT_AA}
         import re
         match = re.match(r'([A-Z])(\d+)([A-Z*])', mutant_str)
         if match:
             wt_aa, pos_str, mut_aa = match.groups()
-            pos = int(pos_str) - 1  # Convert to 0-indexed
-            
+            pos = int(pos_str) - 1
+
             # Reconstruct wild type sequence
-            # The mutated_sequence has the mutation at position pos
-            # We need to replace mut_aa with wt_aa at that position
             if pos < len(mutated_seq) and mutated_seq[pos] == mut_aa:
                 wt_seq = mutated_seq[:pos] + wt_aa + mutated_seq[pos+1:]
             else:
-                # Position doesn't match, skip
                 continue
-            
-            mutants.append({
+
+            mut_info = {
                 'mutant': mutant_str,
                 'wt_seq': wt_seq,
                 'mut_seq': mutated_seq,
                 'pos': pos,
                 'wt_aa': wt_aa,
                 'mut_aa': mut_aa
-            })
+            }
+            
+            # Group mutants by wild-type sequence
+            if wt_seq not in mutants_by_wt_seq:
+                mutants_by_wt_seq[wt_seq] = []
+            mutants_by_wt_seq[wt_seq].append(mut_info)
+            
             scores.append(dms_score)
             score_bins.append(dms_score_bin)
-    
-    if len(mutants) == 0:
+
+    if len(mutants_by_wt_seq) == 0:
         return {
             'file': os.path.basename(dms_file),
             'spearman': None,
             'num_mutants': 0,
             'error': 'No valid mutants found'
         }
+
+    # Compute mutational effects using optimized approach
+    print(f"Computing mutational effects for {len(scores)} mutants across {len(mutants_by_wt_seq)} wild-type sequences...")
     
-    # Compute mutational effects
-    print(f"Computing mutational effects for {len(mutants)} mutants...")
+    mut_effects = {}  # Map from (wt_seq, mutant_str) to effect
+    all_mutants_flat = []  # Flat list for tracking order
+    
+    for wt_seq, mutants_list in tqdm(mutants_by_wt_seq.items(), desc="Processing wild-type sequences"):
+        # KEY OPTIMIZATION: One set of forward passes per wild-type sequence
+        # Get masked marginal log probs for ALL positions in this wild-type sequence
+        log_probs_all = get_masked_marginal_log_probs(model, wt_seq, tokenizer, device, batch_size=16)
+        
+        # Compute effects for all mutants with this wild-type sequence
+        for mut_info in mutants_list:
+            effect = compute_mutational_effect_fast(
+                log_probs_all,
+                wt_seq,
+                mut_info['mut_seq'],
+                tokenizer
+            )
+            mut_effects[(wt_seq, mut_info['mutant'])] = effect
+            all_mutants_flat.append(mut_info)
+
+    # Collect predicted effects in the same order as scores
     predicted_effects = []
-    
-    for mut_info in tqdm(mutants, desc="Evaluating mutants"):
-        effect = compute_mutational_effect(
-            model, 
-            mut_info['wt_seq'], 
-            mut_info['mut_seq'], 
-            tokenizer, 
-            device
-        )
+    for mut_info in all_mutants_flat:
+        effect = mut_effects.get((mut_info['wt_seq'], mut_info['mutant']))
         if effect is not None:
             predicted_effects.append(effect)
         else:
             predicted_effects.append(np.nan)
-    
+
     # Convert to numpy arrays
     predicted_effects = np.array(predicted_effects)
     experimental_scores = np.array(scores)
-    
+
     # Remove NaN values
     valid_mask = ~np.isnan(predicted_effects)
     predicted_effects = predicted_effects[valid_mask]
     experimental_scores = experimental_scores[valid_mask]
-    
+
     if len(predicted_effects) < 2:
         return {
             'file': os.path.basename(dms_file),
             'spearman': None,
-            'num_mutants': len(mutants),
+            'num_mutants': len(all_mutants_flat),
             'valid_mutants': len(predicted_effects),
             'error': 'Too few valid predictions'
         }
-    
+
     # Compute Spearman correlation
     spearman_corr, p_value = spearmanr(predicted_effects, experimental_scores)
-    
+
     return {
         'file': os.path.basename(dms_file),
         'spearman': spearman_corr,
         'p_value': p_value,
-        'num_mutants': len(mutants),
+        'num_mutants': len(all_mutants_flat),
         'valid_mutants': len(predicted_effects),
         'predicted_effects': predicted_effects.tolist(),
         'experimental_scores': experimental_scores.tolist()

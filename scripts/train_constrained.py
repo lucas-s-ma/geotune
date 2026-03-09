@@ -52,7 +52,7 @@ def parse_args():
 
     return parser.parse_args()
 
-def train_epoch(model, dataloader, optimizer, scheduler, lagrangian_module, dihedral_module, alignment_module, gnn_module, device, config, scaler):
+def train_epoch(model, dataloader, optimizer, scheduler, lagrangian_module, dihedral_module, alignment_module, gnn_module, device, config, epoch, scaler):
     """Trains the model for one epoch using a constrained optimization framework."""
     model.train()
 
@@ -571,7 +571,7 @@ def main():
         print(f"\n--- Epoch {epoch+1}/{config.training.num_epochs} ---")
 
         train_lagrangian, train_mlm, train_dihedral, train_gnn, train_foldseek, train_struct_align = train_epoch(
-            model, train_loader, optimizer, scheduler, lagrangian_module, dihedral_module, alignment_module, gnn_module, device, config, scaler
+            model, train_loader, optimizer, scheduler, lagrangian_module, dihedral_module, alignment_module, gnn_module, device, config, epoch, scaler
         )
 
         val_mlm, val_dihedral, val_gnn, val_foldseek, val_struct_align = validate(

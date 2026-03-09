@@ -56,7 +56,7 @@ def parse_args():
     return parser.parse_args()
 
 
-def train_epoch(model, dataloader, optimizer, scheduler, dihedral_constraints, device, config, structure_alignment_loss=None, frozen_gnn=None, scaler=None, embedding_cache=None):
+def train_epoch(model, dataloader, optimizer, scheduler, dihedral_constraints, device, config, epoch, structure_alignment_loss=None, frozen_gnn=None, scaler=None, embedding_cache=None):
     """Train for one epoch with dihedral angle constraints and structure alignment"""
     model.train()
     total_loss = 0
@@ -819,7 +819,7 @@ def main():
 
         # Train
         train_loss, train_mlm_loss, train_constraint_loss, train_struct_align_loss, train_latent_loss, train_physical_loss = train_epoch(
-            model, train_loader, optimizer, scheduler, dihedral_constraints, device, config,
+            model, train_loader, optimizer, scheduler, dihedral_constraints, device, config, epoch,
             structure_alignment_loss=structure_alignment_loss, frozen_gnn=frozen_gnn, scaler=scaler,
             embedding_cache=embedding_cache
         )
