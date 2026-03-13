@@ -115,7 +115,7 @@ def get_masked_sequence_scores(model, sequences, tokenizer, device, batch_size=8
     return all_scores
 
 
-def get_masked marginal log_probs(model, sequence, tokenizer, device, batch_size=16):
+def get_masked_marginal_log_probs(model, sequence, tokenizer, device, batch_size=16):
     """
     Compute masked marginal log probabilities for ALL positions in a sequence efficiently.
     

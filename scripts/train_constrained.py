@@ -24,7 +24,7 @@ project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root))
 
 from models.geotune_esm_model import load_esm_with_lora
-from utils.constrained_dihedral_utils import MultiConstraintLagrangian, compute_dihedral_angles_from_coordinates
+from utils.constrained_dihedral_utils import MultiConstraintLagrangian, ConstrainedDihedralAngleConstraint, compute_dihedral_angles_from_coordinates
 from utils.dihedral_utils import DihedralAngleConstraint
 from utils.data_utils import EfficientProteinDataset, collate_fn
 from utils.structure_alignment_utils import StructureAlignmentLoss, PretrainedGNNWrapper
