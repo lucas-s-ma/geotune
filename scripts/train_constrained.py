@@ -61,6 +61,7 @@ def train_epoch(model, dataloader, optimizer, scheduler, lagrangian_module, dihe
     total_dihedral_loss = 0
     total_gnn_loss = 0
     total_foldseek_loss = 0
+    total_struct_align_loss = 0
 
     progress_bar = tqdm(dataloader, desc="Training Epoch")
     gradient_accumulation_steps = getattr(config.training, 'gradient_accumulation_steps', 1)
@@ -89,7 +90,7 @@ def train_epoch(model, dataloader, optimizer, scheduler, lagrangian_module, dihe
             pLM_embeddings = masked_outputs['sequence_output']
 
             seq_logits = model.lm_head(pLM_embeddings)
-            mlm_loss = nn.CrossEntropyLoss()(seq_logits.view(-1, seq_logits.size(-1)), labels.view(-1))
+            mlm_loss = nn.CrossEntropyLoss(ignore_index=-100)(seq_logits.view(-1, seq_logits.size(-1)), labels.view(-1))
 
             # 2. Calculate Per-Sample Constraint Losses
             # Dihedral Constraint - use DihedralAngleConstraint for consistency with train.py
@@ -128,16 +129,20 @@ def train_epoch(model, dataloader, optimizer, scheduler, lagrangian_module, dihe
                         pGNN_embeddings = gnn_module(n_coords, ca_coords, c_coords)
 
                 struct_align_results = alignment_module(pLM_embeddings, pGNN_embeddings, structure_tokens, attention_mask)
-                # Apply the same weighting as in train.py (latent_weight and physical_weight are typically 0.5)
-                per_sample_gnn_losses = struct_align_results.get('latent_loss_per_sample', per_sample_gnn_losses) * alignment_module.latent_weight
-                per_sample_foldseek_losses = struct_align_results.get('physical_loss_per_sample', per_sample_foldseek_losses) * alignment_module.physical_weight
+                # Get per-sample losses WITHOUT additional weighting (consistent with train.py)
+                # The StructureAlignmentLoss already applies latent_weight and physical_weight internally
+                per_sample_gnn_losses = struct_align_results.get('latent_loss_per_sample', per_sample_gnn_losses)
+                per_sample_foldseek_losses = struct_align_results.get('physical_loss_per_sample', per_sample_foldseek_losses)
 
             # 3. Compute the Lagrangian
+            # Apply same weighting as train.py:
+            # - Dihedral: constraint_weight^2 (module applies once internally, we apply again here for consistency)
+            # - Structure alignment: 0.1 scaling
             lagrangian = lagrangian_module.compute_lagrangian(
                 primary_loss=mlm_loss,
-                dihedral_losses=per_sample_dihedral_losses,
-                gnn_losses=per_sample_gnn_losses,
-                foldseek_losses=per_sample_foldseek_losses,
+                dihedral_losses=per_sample_dihedral_losses * config.model.constraint_weight * dihedral_module.constraint_weight,
+                gnn_losses=per_sample_gnn_losses * 0.1,
+                foldseek_losses=per_sample_foldseek_losses * 0.1,
                 indices=indices
             )
 
@@ -177,7 +182,8 @@ def train_epoch(model, dataloader, optimizer, scheduler, lagrangian_module, dihe
         # Logging
         total_lagrangian_loss += lagrangian.item()
         total_mlm_loss += mlm_loss.item()
-        total_dihedral_loss += per_sample_dihedral_losses.mean().item()
+        # Log weighted dihedral loss (consistent with train.py which logs module output)
+        total_dihedral_loss += (per_sample_dihedral_losses.mean().item() * dihedral_module.constraint_weight)
         total_gnn_loss += per_sample_gnn_losses.mean().item()
         total_foldseek_loss += per_sample_foldseek_losses.mean().item()
         # Track structure alignment loss (sum of gnn + foldseek) for consistency with train.py
@@ -189,7 +195,7 @@ def train_epoch(model, dataloader, optimizer, scheduler, lagrangian_module, dihe
             wandb.log({
                 # Core losses (consistent with train.py)
                 'train_batch_mlm_loss': mlm_loss.item(),
-                'train_batch_dihedral_loss': per_sample_dihedral_losses.mean().item(),
+                'train_batch_dihedral_loss': per_sample_dihedral_losses.mean().item() * dihedral_module.constraint_weight,
                 'train_batch_gnn_loss': per_sample_gnn_losses.mean().item(),
                 'train_batch_foldseek_loss': per_sample_foldseek_losses.mean().item(),
                 # Constrained learning specific metrics
@@ -272,7 +278,7 @@ def validate(model, dataloader, dihedral_module, alignment_module, gnn_module, d
             pLM_embeddings = outputs['sequence_output']
             forward_time += time.time() - forward_start
 
-            # Dihedral Loss - use SmoothL1Loss for consistency with train.py
+            # Dihedral Loss - compute per-sample losses for logging (consistent with train.py training)
             loss_start = time.time()
             dihedral_results = dihedral_module(
                 sequence_embeddings=pLM_embeddings,
@@ -281,7 +287,7 @@ def validate(model, dataloader, dihedral_module, alignment_module, gnn_module, d
                 c_coords=c_coords,
                 attention_mask=attention_mask
             )
-            # Compute per-sample losses for logging consistency
+            # Compute per-sample losses manually (same as train.py training)
             cos_true_phi, cos_true_psi = compute_dihedral_angles_from_coordinates(n_coords, ca_coords, c_coords)
             cos_pred_phi, cos_pred_psi = dihedral_module.predict_dihedral_angles(pLM_embeddings)
 
@@ -293,9 +299,10 @@ def validate(model, dataloader, dihedral_module, alignment_module, gnn_module, d
             psi_mask = attention_mask[:, :min_len_psi].float()
             psi_loss_per_sample = (dihedral_module.loss_fn(cos_pred_psi[:, :min_len_psi], cos_true_psi[:, :min_len_psi]) * psi_mask).sum(dim=1) / psi_mask.sum(dim=1).clamp(min=1.0)
 
-            total_dihedral_loss += (phi_loss_per_sample + psi_loss_per_sample).mean().item()
+            # Apply constraint_weight to match train.py validation (which uses module's weighted output)
+            total_dihedral_loss += ((phi_loss_per_sample + psi_loss_per_sample).mean().item() * dihedral_module.constraint_weight)
 
-            # Structure Alignment Losses - apply same weighting as train.py
+            # Structure Alignment Losses - use unweighted losses (consistent with train.py validation)
             if alignment_module is not None and 'structural_tokens' in batch:
                 structure_tokens = batch['structural_tokens'].to(device)
                 if has_precomputed_embeddings:
@@ -306,19 +313,18 @@ def validate(model, dataloader, dihedral_module, alignment_module, gnn_module, d
                 struct_align_results = alignment_module(pLM_embeddings, pGNN_embeddings, structure_tokens, attention_mask)
 
                 # Ensure we handle cases where loss is not computed (e.g., all NaNs were skipped)
-                # Apply the same weighting as in train.py (latent_weight and physical_weight are typically 0.5)
+                # Use unweighted losses (consistent with train.py which logs latent_loss and physical_loss directly)
                 if torch.is_tensor(struct_align_results['latent_loss']):
-                    weighted_latent_loss = struct_align_results['latent_loss'] * alignment_module.latent_weight
-                    total_gnn_loss += weighted_latent_loss.item()
+                    total_gnn_loss += struct_align_results['latent_loss'].item()
                 else:
-                    weighted_latent_loss = torch.tensor(0.0, device=device)
+                    pass  # No loss to add
                 if torch.is_tensor(struct_align_results['physical_loss']):
-                    weighted_physical_loss = struct_align_results['physical_loss'] * alignment_module.physical_weight
-                    total_foldseek_loss += weighted_physical_loss.item()
+                    total_foldseek_loss += struct_align_results['physical_loss'].item()
                 else:
-                    weighted_physical_loss = torch.tensor(0.0, device=device)
-                # Track structure alignment loss (sum of weighted gnn + foldseek)
-                total_struct_align_loss += (weighted_latent_loss.item() + weighted_physical_loss.item())
+                    pass  # No loss to add
+                # Track structure alignment loss (sum of gnn + foldseek, unweighted like train.py)
+                total_struct_align_loss += (struct_align_results['latent_loss'].item() if torch.is_tensor(struct_align_results['latent_loss']) else 0.0) + \
+                                           (struct_align_results['physical_loss'].item() if torch.is_tensor(struct_align_results['physical_loss']) else 0.0)
             
             loss_time += time.time() - loss_start
 
