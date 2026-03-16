@@ -136,11 +136,12 @@ def train_epoch(model, dataloader, optimizer, scheduler, lagrangian_module, dihe
 
             # 3. Compute the Lagrangian
             # Apply same weighting as train.py:
-            # - Dihedral: constraint_weight^2 (module applies once internally, we apply again here for consistency)
+            # - Dihedral: constraint_weight (applied by the module's forward pass)
             # - Structure alignment: 0.1 scaling
+            # Note: For constrained learning, we use per-sample losses scaled by constraint_weight
             lagrangian = lagrangian_module.compute_lagrangian(
                 primary_loss=mlm_loss,
-                dihedral_losses=per_sample_dihedral_losses * config.model.constraint_weight * dihedral_module.constraint_weight,
+                dihedral_losses=per_sample_dihedral_losses * config.model.constraint_weight,
                 gnn_losses=per_sample_gnn_losses * 0.1,
                 foldseek_losses=per_sample_foldseek_losses * 0.1,
                 indices=indices
@@ -182,7 +183,7 @@ def train_epoch(model, dataloader, optimizer, scheduler, lagrangian_module, dihe
         # Logging
         total_lagrangian_loss += lagrangian.item()
         total_mlm_loss += mlm_loss.item()
-        # Log weighted dihedral loss (consistent with train.py which logs module output)
+        # Log weighted dihedral loss (per-sample mean, consistent with train.py)
         total_dihedral_loss += (per_sample_dihedral_losses.mean().item() * dihedral_module.constraint_weight)
         total_gnn_loss += per_sample_gnn_losses.mean().item()
         total_foldseek_loss += per_sample_foldseek_losses.mean().item()
@@ -278,7 +279,7 @@ def validate(model, dataloader, dihedral_module, alignment_module, gnn_module, d
             pLM_embeddings = outputs['sequence_output']
             forward_time += time.time() - forward_start
 
-            # Dihedral Loss - compute per-sample losses for logging (consistent with train.py training)
+            # Dihedral Loss - use per-sample averaging (consistent with train.py)
             loss_start = time.time()
             dihedral_results = dihedral_module(
                 sequence_embeddings=pLM_embeddings,
@@ -287,10 +288,11 @@ def validate(model, dataloader, dihedral_module, alignment_module, gnn_module, d
                 c_coords=c_coords,
                 attention_mask=attention_mask
             )
-            # Compute per-sample losses manually (same as train.py training)
+            # Compute true angles for per-sample loss calculation
             cos_true_phi, cos_true_psi = compute_dihedral_angles_from_coordinates(n_coords, ca_coords, c_coords)
             cos_pred_phi, cos_pred_psi = dihedral_module.predict_dihedral_angles(pLM_embeddings)
 
+            # Per-sample loss calculation (same as training, consistent with train.py)
             min_len_phi = min(cos_true_phi.shape[1], cos_pred_phi.shape[1])
             phi_mask = attention_mask[:, 1:1+min_len_phi].float()
             phi_loss_per_sample = (dihedral_module.loss_fn(cos_pred_phi[:, :min_len_phi], cos_true_phi[:, :min_len_phi]) * phi_mask).sum(dim=1) / phi_mask.sum(dim=1).clamp(min=1.0)
@@ -299,8 +301,10 @@ def validate(model, dataloader, dihedral_module, alignment_module, gnn_module, d
             psi_mask = attention_mask[:, :min_len_psi].float()
             psi_loss_per_sample = (dihedral_module.loss_fn(cos_pred_psi[:, :min_len_psi], cos_true_psi[:, :min_len_psi]) * psi_mask).sum(dim=1) / psi_mask.sum(dim=1).clamp(min=1.0)
 
-            # Apply constraint_weight to match train.py validation (which uses module's weighted output)
-            total_dihedral_loss += ((phi_loss_per_sample + psi_loss_per_sample).mean().item() * dihedral_module.constraint_weight)
+            per_sample_dihedral_losses = phi_loss_per_sample + psi_loss_per_sample
+            
+            # Apply constraint_weight to match train.py validation
+            total_dihedral_loss += (per_sample_dihedral_losses.mean().item() * dihedral_module.constraint_weight)
 
             # Structure Alignment Losses - use unweighted losses (consistent with train.py validation)
             if alignment_module is not None and 'structural_tokens' in batch:

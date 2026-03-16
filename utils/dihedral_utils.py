@@ -99,7 +99,7 @@ class DihedralAngleConstraint(nn.Module):
     def forward(self, sequence_embeddings, n_coords, ca_coords, c_coords, attention_mask=None):
         """
         Calculate dihedral angle constraint loss
-        
+
         Args:
             sequence_embeddings: (batch_size, seq_len, hidden_dim) - model embeddings
             n_coords: (batch_size, seq_len, 3) - N atom coordinates
@@ -108,29 +108,67 @@ class DihedralAngleConstraint(nn.Module):
             attention_mask: (batch_size, seq_len) - attention mask to ignore padding
         """
         batch_size, seq_len, hidden_dim = sequence_embeddings.shape
-        
+
         # Compute true dihedral angles from coordinates
         cos_true_phi, cos_true_psi = compute_dihedral_angles_from_coordinates(n_coords, ca_coords, c_coords)
-        
+
         # Predict dihedral angles from embeddings
         cos_pred_phi, cos_pred_psi = self.predict_dihedral_angles(sequence_embeddings)
+
+        # Calculate per-sample losses (for consistency with constrained learning framework)
+        phi_loss_per_sample, psi_loss_per_sample = self.angle_consistency_loss_per_sample(
+            cos_true_phi, cos_pred_phi, cos_true_psi, cos_pred_psi, attention_mask)
         
-        # Calculate losses
-        phi_loss = self.angle_consistency_loss(cos_true_phi, cos_pred_phi, attention_mask, angle_type='phi')
-        psi_loss = self.angle_consistency_loss(cos_true_psi, cos_pred_psi, attention_mask, angle_type='psi')
-        
-        # Combine losses (using simple addition)
-        total_dihedral_loss = phi_loss + psi_loss
-        
+        # Also compute global average loss (for backward compatibility)
+        phi_loss_global = self.angle_consistency_loss(cos_true_phi, cos_pred_phi, attention_mask, angle_type='phi')
+        psi_loss_global = self.angle_consistency_loss(cos_true_psi, cos_pred_psi, attention_mask, angle_type='psi')
+        total_dihedral_loss_global = phi_loss_global + psi_loss_global
+
+        # Combine per-sample losses
+        per_sample_dihedral_losses = phi_loss_per_sample + psi_loss_per_sample
+
         return {
-            'total_dihedral_loss': total_dihedral_loss * self.constraint_weight,
-            'phi_loss': phi_loss * self.constraint_weight,
-            'psi_loss': psi_loss * self.constraint_weight,
+            'total_dihedral_loss': total_dihedral_loss_global * self.constraint_weight,
+            'phi_loss': phi_loss_global * self.constraint_weight,
+            'psi_loss': psi_loss_global * self.constraint_weight,
+            'per_sample_dihedral_losses': per_sample_dihedral_losses,
             'cos_true_phi': cos_true_phi,
             'cos_true_psi': cos_true_psi,
             'cos_pred_phi': cos_pred_phi,
             'cos_pred_psi': cos_pred_psi
         }
+
+    def angle_consistency_loss_per_sample(self, true_cos_phi, pred_cos_phi, true_cos_psi, pred_cos_psi, attention_mask=None):
+        """
+        Calculate per-sample loss between true and predicted angle cosines.
+        Returns loss per sample (shape: [batch_size]) for use in constrained learning.
+        
+        Args:
+            true_cos_phi, pred_cos_phi: (batch_size, seq_len-1) cosine values for phi
+            true_cos_psi, pred_cos_psi: (batch_size, seq_len-1) cosine values for psi
+            attention_mask: (batch_size, seq_len) attention mask
+        """
+        batch_size = true_cos_phi.shape[0]
+        
+        # Handle empty case
+        if true_cos_phi.numel() == 0 or pred_cos_phi.numel() == 0:
+            return (torch.zeros(batch_size, device=true_cos_phi.device),
+                    torch.zeros(batch_size, device=true_cos_phi.device))
+        
+        min_len_phi = min(true_cos_phi.shape[1], pred_cos_phi.shape[1])
+        min_len_psi = min(true_cos_psi.shape[1], pred_cos_psi.shape[1])
+        
+        # Phi loss per sample
+        phi_mask = attention_mask[:, 1:1+min_len_phi].float() if attention_mask is not None else torch.ones(batch_size, min_len_phi, device=true_cos_phi.device)
+        phi_loss = self.loss_fn(pred_cos_phi[:, :min_len_phi], true_cos_phi[:, :min_len_phi])
+        phi_loss_per_sample = (phi_loss * phi_mask).sum(dim=1) / phi_mask.sum(dim=1).clamp(min=1.0)
+        
+        # Psi loss per sample
+        psi_mask = attention_mask[:, :min_len_psi].float() if attention_mask is not None else torch.ones(batch_size, min_len_psi, device=true_cos_psi.device)
+        psi_loss = self.loss_fn(pred_cos_psi[:, :min_len_psi], true_cos_psi[:, :min_len_psi])
+        psi_loss_per_sample = (psi_loss * psi_mask).sum(dim=1) / psi_mask.sum(dim=1).clamp(min=1.0)
+        
+        return phi_loss_per_sample, psi_loss_per_sample
     
     def predict_dihedral_angles(self, embeddings):
         """

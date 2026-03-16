@@ -138,7 +138,9 @@ def train_epoch(model, dataloader, optimizer, scheduler, dihedral_constraints, d
                 c_coords,
                 attention_mask
             )
-            total_dihedral_loss = dihedral_losses['total_dihedral_loss']
+            # Use per-sample losses (consistent with train_constrained.py)
+            per_sample_dihedral_losses = dihedral_losses['per_sample_dihedral_losses']
+            total_dihedral_loss = per_sample_dihedral_losses.mean() * dihedral_constraints.constraint_weight
 
             # Calculate structure alignment loss
             struct_align_loss = torch.tensor(0.0, device=device)
@@ -396,7 +398,9 @@ def validate(model, dataloader, dihedral_constraints, device, config, structure_
                 c_coords,
                 attention_mask
             )
-            total_dihedral_loss = dihedral_losses['total_dihedral_loss']
+            # Use per-sample losses (consistent with train_constrained.py)
+            per_sample_dihedral_losses = dihedral_losses['per_sample_dihedral_losses']
+            total_dihedral_loss = per_sample_dihedral_losses.mean() * dihedral_constraints.constraint_weight
 
             # Calculate structure alignment loss
             struct_align_loss = torch.tensor(0.0, device=device)
