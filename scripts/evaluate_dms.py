@@ -203,15 +203,12 @@ def compute_mutational_effect_fast(log_probs_all, wt_seq, mut_seq, tokenizer):
     
     pos, wt_aa, mut_aa = diff_positions[0]
     
-    # Get token IDs
-    aa_to_token = {
-        'A': 6, 'R': 12, 'N': 15, 'D': 13, 'C': 29, 'Q': 23, 'E': 17, 'G': 20,
-        'H': 24, 'I': 25, 'L': 18, 'K': 19, 'M': 21, 'F': 26, 'P': 27, 'S': 28,
-        'T': 30, 'W': 31, 'Y': 32, 'V': 22
-    }
-    
-    wt_token_id = aa_to_token.get(wt_aa)
-    mut_token_id = aa_to_token.get(mut_aa)
+    # Get token IDs using the tokenizer
+    try:
+        wt_token_id = tokenizer.encode(wt_aa, add_special_tokens=False)[0]
+        mut_token_id = tokenizer.encode(mut_aa, add_special_tokens=False)[0]
+    except (IndexError, ValueError):
+        return None
     
     if wt_token_id is None or mut_token_id is None:
         return None
@@ -279,13 +276,7 @@ def compute_mutational_effect(model, wild_type_seq, mutant_seq, tokenizer, devic
             wt_token_id = tokenizer.encode(wt_aa, add_special_tokens=False)[0]
             mut_token_id = tokenizer.encode(mut_aa, add_special_tokens=False)[0]
         except (IndexError, ValueError):
-            aa_to_token = {
-                'A': 6, 'R': 12, 'N': 15, 'D': 13, 'C': 29, 'Q': 23, 'E': 17, 'G': 20,
-                'H': 24, 'I': 25, 'L': 18, 'K': 19, 'M': 21, 'F': 26, 'P': 27, 'S': 28,
-                'T': 30, 'W': 31, 'Y': 32, 'V': 22
-            }
-            wt_token_id = aa_to_token.get(wt_aa, None)
-            mut_token_id = aa_to_token.get(mut_aa, None)
+            return None
         
         if wt_token_id is None or mut_token_id is None:
             return None
