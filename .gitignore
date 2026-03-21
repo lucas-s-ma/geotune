@@ -15,12 +15,15 @@ DMS_ProteinGym_substitutions/
 # Output files
 outputs/
 checkpoint/
+outputs_constrained/
 wandb/
 foldseek/
 token_distribution.png
 confusion_matrix.png
 distance_violations.png
 dihedral_distribution.png
+*.err
+*.out
 
 # Jupyter notebooks
 notebooks/
