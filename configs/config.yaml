@@ -1,11 +1,10 @@
-# Main configuration for GeoTune New
+# Main configuration for GeoTune
 
 # Model configuration
 model:
   model_name: "facebook/esm2_t6_8M_UR50D"  # Base ESM2 model (8M parameters)
   # Other options: facebook/esm2_t12_35M_UR50D, facebook/esm2_t30_150M_UR50D, facebook/esm2_t33_650M_UR50D
-  constraint_weight: 5.0  # Weight for geometric constraint loss (increased from 0.1 to balance with other losses)
-  dist_threshold: 15.0    # Distance threshold for constraints (Angstroms)
+  constraint_weight: 5.0  # Weight for geometric constraint loss
 
 # LoRA configuration
 lora:
@@ -22,46 +21,62 @@ lora:
 
 # Training configuration
 training:
-  batch_size: 8           # Batch size - reduced for 16GB GPU
-  gradient_accumulation_steps: 4  # Accumulate gradients (effective batch_size = 2*4 = 8)
-  learning_rate: 1e-4     # Learning rate (used if primal_lr and dual_lr not specified)
-  primal_lr: 1e-4         # Learning rate for primal task (ESM model + MLM head)
-  dual_lr: 5e-1           # Learning rate for dual task (structure alignment loss module)
-  num_epochs: 50          # Number of epochs -- test for convergence
+  batch_size: 8           # Batch size
+  gradient_accumulation_steps: 4  # Accumulate gradients (effective batch_size = 8 * 4 = 32)
+
+  # Learning rates - use primal_lr and dual_lr for clarity
+  primal_lr: 1e-4         # Learning rate for primal task (ESM model + MLM head + dihedral + alignment)
+  dual_lr: 5e-1           # Learning rate for dual task (Lagrange multipliers in constrained training)
+  learning_rate: 1e-4     
+  
+  num_epochs: 50          # Number of training epochs
   warmup_steps: 100       # Warmup steps for scheduler
-  max_seq_len: 512        # Maximum sequence length - reduced for memory
-  seed: 1644                # Random seed
-  output_dir: "outputs_unconstrained"   # Output directory for unconstrained training
-  checkpoint_frequency: 1 # Save checkpoint every N epochs (default: 2, set to 1 for testing)
-  use_gradient_checkpointing: true  # Enable gradient checkpointing to save memory
-  mixed_precision: false   # Use fp16 mixed precision training
+  max_seq_len: 512        # Maximum sequence length
+  seed: 1644              # Random seed
+
+  # Output directories
+  output_dir: "outputs_unconstrained"   # Base output directory
+
+  # Checkpoint settings
+  checkpoint_frequency: 1  # Save checkpoint every N epochs
+
+  # Memory optimization
+  use_gradient_checkpointing: true   # Enable gradient checkpointing to save memory
+  mixed_precision: false             # Use fp16 mixed precision training
+
+  # Masking and loss weights
+  mask_ratio: 0.15                   # Mask ratio for MLM task
+  struct_align_weight: 0.1           # Weight for structure alignment loss
 
 # Data configuration
 data:
   data_path: "data/processed"
-  use_precomputed_embeddings: true # Set to true to use stored embeddings, false to generate on-the-fly
-   # Path to processed data files
-  num_workers: 2          # Number of data loading workers
+  use_precomputed_embeddings: true   # Use cached embeddings if available
+  num_workers: 2                     # Number of data loading workers
+  subset_fraction: 1.0               # Fraction of dataset to use (for debugging)
 
 # Data pipeline configuration
 data_pipeline:
-  embedding_dim: 320      # Dimension of GearNet embeddings (must match ESM2 hidden_size: 8M=320, 35M=480, 150M=640)
-  foldseek_db_path: "data/foldseek_db" # Path to Foldseek database
+  embedding_dim: 320      # Dimension of GearNet embeddings (must match ESM2 hidden_size)
+  foldseek_db_path: "data/foldseek_db"
 
 # Evaluation configuration
 evaluation:
-  eval_data_path: "data/processed_test" # Path to evaluation data
-  eval_batch_size: 8      # Batch size for evaluation
+  eval_data_path: "data/processed_test"
+  eval_batch_size: 8
 
 # Logging configuration
 logging:
-  use_wandb: true         # Whether to use Weights & Biases
-  project_name: "geotune_online"  # W&B project name
-  lambda_log_frequency: 1 # Log lambda distributions every N epochs (default: 1 = every epoch)
-  
-# Constraint configuration
+  use_wandb: true
+  project_name: "geotune"
+  lambda_log_frequency: 1  # Log lambda distributions every N epochs (constrained training only)
+
+# Constraint configuration (for constrained training)
 constraints:
-  distance_weight: 1.0    # Weight for distance constraints
-  angle_weight: 0.5       # Weight for angle constraints
-  neighborhood_weight: 0.5  # Weight for neighborhood constraints
-  use_structure_alignment: true  # Enable structure alignment with on-the-fly embedding generation and caching
+  distance_weight: 1.0
+  angle_weight: 0.5
+  neighborhood_weight: 0.5
+  use_structure_alignment: true
+
+  # NOTE: Epsilon values for constrained training are now passed via CLI args only
+  # dihedral_epsilon, gnn_epsilon, foldseek_epsilon are NOT stored in config

@@ -322,3 +322,48 @@ class MultiConstraintLagrangian(nn.Module):
                 'lam_foldseek_max': self.lam_foldseek.max().item(),
             }
         return stats
+
+    def state_dict(self, destination=None, prefix='', keep_vars=False):
+        """Save state including lambda buffers and configuration."""
+        if destination is None:
+            destination = {}
+        
+        # Save parent state (includes buffers via register_buffer)
+        destination = super().state_dict(destination, prefix, keep_vars)
+        
+        # Also save configuration parameters
+        destination[prefix + 'epsilon_config'] = {
+            'dihedral_epsilon': self.dihedral_epsilon,
+            'gnn_epsilon': self.gnn_epsilon,
+            'foldseek_epsilon': self.foldseek_epsilon,
+        }
+        destination[prefix + 'dual_lr'] = self.dual_lr
+        destination[prefix + 'dataset_size'] = self.dataset_size
+        
+        return destination
+
+    def load_state_dict(self, state_dict, strict=True, assign=False):
+        """Load state and restore configuration."""
+        # Extract and remove epsilon config before loading
+        prefix = ''
+        for key in state_dict.keys():
+            if key.endswith('epsilon_config'):
+                prefix = key.replace('epsilon_config', '')
+                break
+        
+        epsilon_config = state_dict.pop(prefix + 'epsilon_config', None)
+        dual_lr = state_dict.pop(prefix + 'dual_lr', None)
+        dataset_size = state_dict.pop(prefix + 'dataset_size', None)
+        
+        # Restore configuration if available
+        if epsilon_config is not None:
+            self.dihedral_epsilon = epsilon_config['dihedral_epsilon']
+            self.gnn_epsilon = epsilon_config['gnn_epsilon']
+            self.foldseek_epsilon = epsilon_config['foldseek_epsilon']
+        if dual_lr is not None:
+            self.dual_lr = dual_lr
+        if dataset_size is not None:
+            self.dataset_size = dataset_size
+        
+        # Load parent state (buffers)
+        return super().load_state_dict(state_dict, strict=strict, assign=assign)
